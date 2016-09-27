@@ -18,7 +18,10 @@ History:
   2016/09/27: continue
 
 Todo:
-
+  add YARA search term support
+  add hex search term support
+  add global search term support
+  
 """
 
 import optparse
@@ -28,10 +31,13 @@ import zipfile
 import textwrap
 import re
 import binascii
-import cStringIO
 import string
 import math
 import hashlib
+if sys.version_info[0] >= 3:
+    from io import StringIO
+else:
+    from cStringIO import StringIO
 
 dumplinelength = 16
 MALWARE_PASSWORD = 'infected'
@@ -51,6 +57,13 @@ def C2BIP3(string):
         return bytes([ord(x) for x in string])
     else:
         return string
+
+#Convert 2 String If Python 3
+def C2SIP3(bytes):
+    if sys.version_info[0] > 2:
+        return ''.join([chr(byte) for byte in bytes])
+    else:
+        return bytes
 
 # CIC: Call If Callable
 def CIC(expression):
@@ -483,15 +496,15 @@ def DecodeSearchSub(exprfilename, data, options):
 def DecodeSearch(exprfilename, filename, options):
     if filename == '':
         IfWIN32SetBinary(sys.stdin)
-        oStringIO = cStringIO.StringIO(sys.stdin.read())
+        oStringIO = StringIO(sys.stdin.read())
     elif filename.lower().endswith('.zip'):
         oZipfile = zipfile.ZipFile(filename, 'r')
         oZipContent = oZipfile.open(oZipfile.infolist()[0], 'r', C2BIP3(MALWARE_PASSWORD))
-        oStringIO = cStringIO.StringIO(oZipContent.read())
+        oStringIO = StringIO(C2SIP3(oZipContent.read()))
         oZipContent.close()
         oZipfile.close()
     else:
-        oStringIO = cStringIO.StringIO(open(filename, 'rb').read())
+        oStringIO = StringIO(open(filename, 'rb').read())
 
     DecodeSearchSub(exprfilename, CutData(oStringIO.read(), options.cut), options)
 
