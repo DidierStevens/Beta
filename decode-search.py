@@ -2,8 +2,8 @@
 
 __description__ = 'Tool to decode and search'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.1'
-__date__ = '2016/09/27'
+__version__ = '0.0.2'
+__date__ = '2016/10/12'
 
 """
 
@@ -16,12 +16,14 @@ History:
   2016/09/21: continue
   2016/09/26: continue
   2016/09/27: continue
+  2016/10/05: 0.0.2 added [global]; hex; pefile, *.*, ...
+  2016/10/11: action regex
+  2016/10/12: global action
+  2016/11/02: fixes
 
 Todo:
   add YARA search term support
-  add hex search term support
-  add global search term support
-  
+
 """
 
 import optparse
@@ -34,6 +36,9 @@ import binascii
 import string
 import math
 import hashlib
+import collections
+import glob
+import struct
 if sys.version_info[0] >= 3:
     from io import StringIO
 else:
@@ -78,6 +83,39 @@ def IFF(expression, valueTrue, valueFalse):
         return CIC(valueTrue)
     else:
         return CIC(valueFalse)
+
+def ROT(byte, offset):
+    if byte >= ord('a') and byte <= ord('z'):
+        return (byte + offset - ord('a') + 1) % 26 + ord('a') - 1
+    elif byte >= ord('A') and byte <= ord('Z'):
+        return (byte + offset - ord('A') + 1) % 26 + ord('A') - 1
+    else:
+        return byte
+
+def File2Strings(filename):
+    try:
+        f = open(filename, 'r')
+    except:
+        return None
+    try:
+        return map(lambda line:line.rstrip('\n'), f.readlines())
+    except:
+        return None
+    finally:
+        f.close()
+
+def ProcessAt(argument):
+    if argument.startswith('@'):
+        strings = File2Strings(argument[1:])
+        if strings == None:
+            raise Exception('Error reading %s' % argument)
+        else:
+            return strings
+    else:
+        return [argument]
+
+def ExpandFilenameArguments(filenames):
+    return list(collections.OrderedDict.fromkeys(sum(map(glob.glob, sum(map(ProcessAt, filenames), [])), [])))
 
 def File2String(filename):
     try:
@@ -373,38 +411,135 @@ def GenerateValues(variables, values, results):
         results.append(values)
 
 class cExpression():
-    def __init__(self, expression, decoder, terms, action):
+    def __init__(self, expression, decoder, terms, actions):
         self.expression = expression
         self.decoder= decoder
         self.terms = terms
-        self.action = action
+        self.actions = actions
+
+class cTermString():
+    def __init__(self, string):
+        self.string = string
+
+    def Search(self, data):
+        return data.find(self.string)
+
+    def ToString(self):
+        return self.string
+
+class cTermHex():
+    def __init__(self, hex):
+        self.hex = hex
+        self.string = binascii.a2b_hex(hex)
+
+    def Search(self, data):
+        return data.find(self.string)
+
+    def ToString(self):
+        return self.hex
+
+class cTermPEFile():
+    def __init__(self):
+        pass
+
+    def Search(self, data):
+        start = 0
+        while True:
+            position = data.find('MZ', start)
+            if position == -1:
+                return -1
+            offsetbytes = data[position + 0x3C:position + 0x3C + 4]
+            if len(offsetbytes) != 4:
+                return -1
+            offset = struct.unpack('<I', offsetbytes)[0]
+            if data[position + offset:position + offset + 2] == 'PE':
+                return position
+            start = position + 1
+
+    def ToString(self):
+        return 'pefile'
+
+def SplitExpressionsFile(lines):
+    lines = [line for line in lines if not line.startswith('#') and line.strip() != '']
+    foundGlobal = False
+    linesGlobal = []
+    foundSearch = False
+    linesSearch = []
+    linesAdding = linesSearch
+    for line in lines:
+        if line.strip() == '[global]':
+            if foundGlobal or foundSearch or linesAdding != []:
+                print('Parsing error: unexpected [global]')
+                return [[], []]
+            foundGlobal = True
+            linesAdding = linesGlobal
+        elif line.strip() == '[search]':
+            if foundSearch or not foundGlobal and linesAdding != []:
+                print('Parsing error: unexpected [search]')
+                return [[], []]
+            foundSearch = True
+            linesAdding = linesSearch
+        else:
+            linesAdding.append(line)
+    return [linesGlobal, linesSearch]
+
+def ParseTerm(line):
+    if line.startswith('string '):
+        return cTermString(line[7:])
+    elif line.startswith('hex '):
+        return cTermHex(line[4:])
+    elif line == 'pefile':
+        return cTermPEFile()
+    else:
+        return None
 
 def ParseExpressionsFile(exprfilename):
     expressions = []
+    termsGlobal = []
+    actionsGlobal = []
+    linesGlobal, linesSearch = SplitExpressionsFile(File2Strings(exprfilename))
+    for line in linesGlobal:
+        oTerm = ParseTerm(line)
+        if oTerm != None:
+            termsGlobal.append(oTerm)
+        else:
+            if line.startswith('action '):
+                actionsGlobal.append(line[7:])
+            else:
+                print('Parsing error: term expected')
+                return []
     expression = None
+    terms = []
+    terms.extend(termsGlobal)
     decoder = None
-    strings = []
-    action = None
-    for line in File2Strings(exprfilename):
-        if line.startswith('#') or line.strip() == '':
-            continue
+    actions = []
+    actions.extend(actionsGlobal)
+    for line in linesSearch:
         if line.startswith('expression '):
-            if expression != None and strings != []:
-                expressions.append(cExpression(expression, decoder, strings, action))
+            if expression != None and terms != []:
+                expressions.append(cExpression(expression, decoder, terms, actions))
                 expression = None
-                strings = []
+                terms = []
+                terms.extend(termsGlobal)
+                decoder = None
+                actions = []
+                actions.extend(actionsGlobal)
             if expression != None:
                 print('Parsing error: string expected')
                 return []
             else:
                 expression = line[11:]
-                strings = []
-        elif line.startswith('string '):
+                terms = []
+                terms.extend(termsGlobal)
+                decoder = None
+                actions = []
+                actions.extend(actionsGlobal)
+        elif ParseTerm(line) != None:
             if expression == None:
                 print('Parsing error: no expression')
                 return []
             else:
-                strings.append(line[7:])
+                terms.append(ParseTerm(line))
         elif line.startswith('decoder '):
             if expression == None:
                 print('Parsing error: no expression')
@@ -416,12 +551,12 @@ def ParseExpressionsFile(exprfilename):
                 print('Parsing error: no expression')
                 return []
             else:
-                action = line[7:]
+                actions.append(line[7:])
         else:
             print('Parsing error: unknown line: ' % line)
             return []
-    if expression != None and strings != []:
-        expressions.append(cExpression(expression, decoder, strings, action))
+    if expression != None and terms != []:
+        expressions.append(cExpression(expression, decoder, terms, actions))
     return expressions
 
 def DecodeData(data, decoder):
@@ -459,8 +594,8 @@ def DecodeSearchSub(exprfilename, data, options):
             if options.verbose:
                 print(expression)
             for translateddata in DecodeData(eval("''.join([chr(" + expression + ") for byte in map(ord, data)])"), oExpression.decoder):
-                for term in oExpression.terms:
-                    position = translateddata.find(term)
+                for oTerm in oExpression.terms:
+                    position = oTerm.Search(translateddata)
                     if position != -1:
                         if options.asciidump:
                             StdoutWriteChunked(HexAsciiDump(translateddata))
@@ -471,7 +606,7 @@ def DecodeSearchSub(exprfilename, data, options):
                             StdoutWriteChunked(translateddata)
                         else:
                             print('Found:')
-                            print(' Search term: %s' % term)
+                            print(' Search term: %s' % oTerm.ToString())
                             print(' Position:    0x%08x (%d)' % (position, position))
                             print(' Expression:  %s' % expression)
                             if oExpression.decoder != None:
@@ -487,35 +622,45 @@ def DecodeSearchSub(exprfilename, data, options):
                             print(' %s: %s' % ('Whitespace bytes', countWhitespaceBytes))
                             print(' %s: %s' % ('Printable bytes', countPrintableBytes))
                             print(' %s: %s' % ('High bytes', countHighBytes))
-                            if oExpression.action == 'strings':
-                                print('Strings:')
-                                for extractedstring in ExtractStrings(translateddata):
-                                    print(extractedstring)
-                        return
+                            for action in oExpression.actions:
+                                if action == 'strings':
+                                    print('Strings:')
+                                    for extractedstring in ExtractStrings(translateddata):
+                                        print(extractedstring)
+                                elif action.startswith('regex '):
+                                    print('Regex:')
+                                    for matchedstring in re.compile(action[6:]).findall(translateddata):
+                                        print(matchedstring)
+                        if not options.all:
+                            return
 
-def DecodeSearch(exprfilename, filename, options):
-    if filename == '':
-        IfWIN32SetBinary(sys.stdin)
-        oStringIO = StringIO(sys.stdin.read())
-    elif filename.lower().endswith('.zip'):
-        oZipfile = zipfile.ZipFile(filename, 'r')
-        oZipContent = oZipfile.open(oZipfile.infolist()[0], 'r', C2BIP3(MALWARE_PASSWORD))
-        oStringIO = StringIO(C2SIP3(oZipContent.read()))
-        oZipContent.close()
-        oZipfile.close()
-    else:
-        oStringIO = StringIO(open(filename, 'rb').read())
+def DecodeSearch(exprfilename, filenames, options):
+    for filename in ExpandFilenameArguments(filenames):
+        if filename == '':
+            IfWIN32SetBinary(sys.stdin)
+            oStringIO = StringIO(sys.stdin.read())
+        elif filename.lower().endswith('.zip'):
+            oZipfile = zipfile.ZipFile(filename, 'r')
+            oZipContent = oZipfile.open(oZipfile.infolist()[0], 'r', C2BIP3(MALWARE_PASSWORD))
+            oStringIO = StringIO(C2SIP3(oZipContent.read()))
+            oZipContent.close()
+            oZipfile.close()
+        else:
+            oStringIO = StringIO(open(filename, 'rb').read())
 
-    DecodeSearchSub(exprfilename, CutData(oStringIO.read(), options.cut), options)
+        if not options.dump and not options.hexdump and not options.asciidump:
+            print('File: %s' % filename)
+        DecodeSearchSub(exprfilename, CutData(oStringIO.read(), options.cut), options)
 
 def Main():
-    oParser = optparse.OptionParser(usage='usage: %prog [options] expr-file [file|zip]\n' + __description__, version='%prog ' + __version__)
+    oParser = optparse.OptionParser(usage='usage: %prog [options] expr-file [file|zip ...]\n' + __description__, version='%prog ' + __version__)
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
     oParser.add_option('-c', '--cut', type=str, default='', help='cut data')
     oParser.add_option('-d', '--dump', action='store_true', default=False, help='perform dump')
     oParser.add_option('-x', '--hexdump', action='store_true', default=False, help='perform hex dump')
     oParser.add_option('-a', '--asciidump', action='store_true', default=False, help='perform ascii dump')
     oParser.add_option('-v', '--verbose', action='store_true', default=False, help='Verbose output')
+    oParser.add_option('-A', '--all', action='store_true', default=False, help='try all expressions')
     (options, args) = oParser.parse_args()
 
     if options.man:
@@ -527,7 +672,7 @@ def Main():
         print('Error: the expression of the cut option (-c) is invalid: %s' % options.cut)
         return
 
-    if len(args) > 2 or len(args) == 0:
+    if len(args) == 0:
         oParser.print_help()
         print('')
         print('  Source code put in the public domain by Didier Stevens, no Copyright')
@@ -536,7 +681,7 @@ def Main():
     elif len(args) == 1:
         DecodeSearch(args[0], '', options)
     else:
-        DecodeSearch(args[0], args[1], options)
+        DecodeSearch(args[0], args[1:], options)
 
 if __name__ == '__main__':
     Main()

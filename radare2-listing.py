@@ -3,7 +3,7 @@
 __description__ = "Program to add information to radare2 listing"
 __author__ = 'Didier Stevens'
 __version__ = '0.0.1'
-__date__ = '2016/09/28'
+__date__ = '2016/11/01'
 
 """
 
@@ -15,6 +15,7 @@ History:
   2016/09/15: start
   2016/09/21: continue
   2016/09/28: all text on one line
+  2016/11/01: added option -c
 
 Todo:
 """
@@ -136,11 +137,13 @@ def Radare2ListingSingle(filenames, oOutput, options):
                     lines.append(line)
                 else:
                     if comment == '':
-                        oOutput.Line(line)
+                        if not options.comment:
+                            oOutput.Line(line)
                     else:
                         oOutput.Line(lines[0] + " ; '%s'" % comment)
-                        for line1 in lines[1:]:
-                            oOutput.Line(line1)
+                        if not options.comment:
+                            for line1 in lines[1:]:
+                                oOutput.Line(line1)
                         comment = ''
                         lines = []
             else:
@@ -168,6 +171,7 @@ https://DidierStevens.com'''
 
     oParser = optparse.OptionParser(usage='usage: %prog [options] [expression [[@]file ...]]\n' + __description__ + moredesc, version='%prog ' + __version__)
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
+    oParser.add_option('-c', '--comment', action='store_true', default=False, help='Only list lines with added comments')
     oParser.add_option('-o', '--output', type=str, default='', help='Output to file')
     (options, args) = oParser.parse_args()
 
