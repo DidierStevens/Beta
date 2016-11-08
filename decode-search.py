@@ -3,7 +3,7 @@
 __description__ = 'Tool to decode and search'
 __author__ = 'Didier Stevens'
 __version__ = '0.0.2'
-__date__ = '2016/10/12'
+__date__ = '2016/11/08'
 
 """
 
@@ -20,6 +20,7 @@ History:
   2016/10/11: action regex
   2016/10/12: global action
   2016/11/02: fixes
+  2016/11/08: try 4 base64 cases in DecodeData
 
 Todo:
   add YARA search term support
@@ -565,9 +566,10 @@ def DecodeData(data, decoder):
     elif decoder == 'base64':
         result = []
         for base64string in re.findall('[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/]+={0,2}', data):
-            if len(base64string) % 4 == 0:
+#            if len(base64string) % 4 == 0:
+            for iter in range(4):
                 try:
-                    base64data = binascii.a2b_base64(base64string)
+                    base64data = binascii.a2b_base64(base64string[iter:])
                     result.append(base64data)
                 except:
                     pass
