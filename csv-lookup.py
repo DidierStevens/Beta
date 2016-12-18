@@ -94,6 +94,29 @@ def SelectValuesFromRow(row, columns):
             result.append('')
     return result
 
+def Lookup(key, dictionary, partial):
+    if key in dictionary:
+        return (dictionary[key], 'FULLMATCH', '')
+    if partial == '':
+        return (None, '', '')
+    splitkey = key.split(partial[0])
+    if partial[1] == 'l':
+        splitkey = splitkey[1:]
+    else:
+        splitkey = splitkey[:-1]
+    minimumlength = 1
+    if partial[2:] !='':
+        minimumlength = int(partial[2:])
+    while len(splitkey) >= minimumlength:
+        partialkey = partial[0].join(splitkey)
+        if partialkey in dictionary:
+            return (dictionary[partialkey], str(len(splitkey)), partialkey)
+        if partial[1] == 'l':
+            splitkey = splitkey[1:]
+        else:
+            splitkey = splitkey[:-1]
+    return (None, '', '')
+
 def CSVLookup(fileCSV, columnCSV, headers, fileLookup, columnLookup, columnValues, fileOutput, options):
     dLookup = BuildDictionary(fileLookup, columnLookup, options.separator[1], options.headers, options.ignorecase, options.unquoted)
 
@@ -118,12 +141,12 @@ def CSVLookup(fileCSV, columnCSV, headers, fileLookup, columnLookup, columnValue
         reader.next()
         fOut.write(MakeCSVLine(headers, options.separator[2], QUOTE) + '\n')
     for row in reader:
-        key = Function(row[columnCSV])
-        if key in dLookup:
+        matchedrow, match, partialkey = Lookup(Function(row[columnCSV]), dLookup, options.partial)
+        if matchedrow != None:
             if options.found:
                 value = ['1']
             else:
-                value = SelectValuesFromRow(dLookup[key], columnValues)
+                value = SelectValuesFromRow(matchedrow, columnValues)
         elif options.exclude:
             value = None
         else:
@@ -132,6 +155,9 @@ def CSVLookup(fileCSV, columnCSV, headers, fileLookup, columnLookup, columnValue
             else:
                 value = map(lambda x:'', columnValues)
         if value != None:
+            if options.partial != '':
+                value.append(match)
+                value.append(partialkey)
             out = row[0:columnCSV + replace] + value + row[columnCSV + 1:]
             fOut.write(MakeCSVLine(out, options.separator[2], QUOTE) + '\n')
     fIn.close()
@@ -210,6 +236,7 @@ def Main():
     oParser.add_option('-i', '--ignorecase', action='store_true', default=False, help='ignore case')
     oParser.add_option('-e', '--exclude', action='store_true', default=False, help='exclude rows with no lookup value')
     oParser.add_option('-f', '--found', action='store_true', default=False, help='use indicator: was lookup successful or not')
+    oParser.add_option('-p', '--partial', default='', help='settings for partial lookup')
     oParser.add_option('-U', '--unquoted', action='store_true', default=False, help='No handling of quotes in CSV file')
     (options, args) = oParser.parse_args()
 
