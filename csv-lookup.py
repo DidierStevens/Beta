@@ -3,7 +3,7 @@
 __description__ = 'Tool to lookup value for CSV files'
 __author__ = 'Didier Stevens'
 __version__ = '0.0.1'
-__date__ = '2016/12/18'
+__date__ = '2016/12/19'
 
 """
 
@@ -20,7 +20,8 @@ History:
   2014/08/13: added option unquoted, changed skipinitialspace
   2015/08/13: added support for \t separator
   2016/04/22: added support for .gz
-  2016/12/18: added ParseOptionSeparator
+  2016/12/18: added ParseOptionSeparator, added option -p
+  2016/12/19: added option useheader
 
 Todo:
 """
@@ -30,6 +31,7 @@ import optparse
 import signal
 import os
 import gzip
+import cStringIO
 
 QUOTE = '"'
 
@@ -163,8 +165,10 @@ def CSVLookup(fileCSV, columnCSV, headers, fileLookup, columnLookup, columnValue
     fIn.close()
     fOut.close()
 
-def GetHeader(file, separator, unquoted):
-    if os.path.splitext(file)[1].lower() == '.gz':
+def GetHeader(file, useheader, separator, unquoted):
+    if useheader != '':
+        fIn = cStringIO.StringIO(useheader)
+    elif os.path.splitext(file)[1].lower() == '.gz':
         fIn = gzip.GzipFile(file, 'rb')
     else:
         fIn = open(file, 'rb')
@@ -173,9 +177,9 @@ def GetHeader(file, separator, unquoted):
     fIn.close()
     return header
 
-def ConvertHeaderToIndex(file, separator, columns, unquoted):
+def ConvertHeaderToIndex(file, useheader, separator, columns, unquoted):
     try:
-        header = GetHeader(file, separator, unquoted)
+        header = GetHeader(file, useheader, separator, unquoted)
         result = []
         for column in columns.split(separator):
             result.append(header.index(column))
@@ -186,23 +190,30 @@ def ConvertHeaderToIndex(file, separator, columns, unquoted):
 def Process(fileCSV, columnCSV, fileLookup, columnLookup, columnValue, fileOutput, options):
     FixPipe()
     if options.headers:
-        lColumnCSV = ConvertHeaderToIndex(fileCSV, options.separator[0], columnCSV, options.unquoted)
+        inputuseheader = ''
+        lookupuseheader = ''
+        if options.useheader != '':
+            if options.useheader[0] == 'l':
+                lookupuseheader = options.useheader[2:]
+            else:
+                inputuseheader = options.useheader[2:]
+        lColumnCSV = ConvertHeaderToIndex(fileCSV, inputuseheader, options.separator[0], columnCSV, options.unquoted)
         if lColumnCSV == None or len(lColumnCSV) != 1:
             print('Column %s not found in file %s' % (columnCSV, fileCSV))
             return
         iColumnCSV = lColumnCSV[0]
-        lColumnLookup = ConvertHeaderToIndex(fileLookup, options.separator[1], columnLookup, options.unquoted)
+        lColumnLookup = ConvertHeaderToIndex(fileLookup, lookupuseheader, options.separator[1], columnLookup, options.unquoted)
         if lColumnLookup == None or len(lColumnLookup) != 1:
             print('Column %s not found in file %s' % (columnLookup, fileLookup))
             return
         iColumnLookup = lColumnLookup[0]
-        headersCSV = GetHeader(fileCSV, options.separator[0], options.unquoted)
-        headersLookup = GetHeader(fileLookup, options.separator[1], options.unquoted)
+        headersCSV = GetHeader(fileCSV, inputuseheader, options.separator[0], options.unquoted)
+        headersLookup = GetHeader(fileLookup, lookupuseheader, options.separator[1], options.unquoted)
         if options.found:
             headersInsert = [columnValue]
             lColumnValue = []
         else:
-            lColumnValue = ConvertHeaderToIndex(fileLookup, options.separator[1], columnValue, options.unquoted)
+            lColumnValue = ConvertHeaderToIndex(fileLookup, lookupuseheader, options.separator[1], columnValue, options.unquoted)
             if lColumnValue == None or len(lColumnValue) == 0:
                 print('Column %s not found in file %s' % (columnValue, fileLookup))
                 return
@@ -228,6 +239,44 @@ def ParseOptionSeparator(separator, number):
         return None
     return [c for c in separator]
 
+def ParseOptionPartial(partial):
+    if partial == '':
+        return False
+    if len(partial) == 1:
+        print('Error: second character of option partial should be present')
+        return True
+    if not partial[1] in ['l', 'r']:
+        print('Error: second character of option partial should be l or r')
+        return True
+    if len(partial) > 2:
+        try:
+            number = int(partial[2:])
+            if number <= 0:
+                print('Error: integer of option partial should be at least 1')
+                return True
+        except:
+            print('Error: third character of option partial should be an integer')
+            return True
+    return False
+
+def CheckOptionUseheader(useheader):
+    if useheader == '':
+        return False
+    if useheader[0:2] not in ['i:', 'l:']:
+        print('Error: option useheader should start with i: or l:')
+        return True
+    return False
+
+def CheckOptions(options):
+    options.separator = ParseOptionSeparator(options.separator, 3)
+    if options.separator == None:
+        return True
+    if ParseOptionPartial(options.partial):
+        return True
+    if CheckOptionUseheader(options.useheader):
+        return True
+    return False
+
 def Main():
     oParser = optparse.OptionParser(usage='usage: %prog [options] fileCSV columnCSV fileLookup columnLookup columnValue fileOutput\n' + __description__, version='%prog ' + __version__)
     oParser.add_option('-s', '--separator', default=';', help='separator character(s) (default ;)')
@@ -238,10 +287,10 @@ def Main():
     oParser.add_option('-f', '--found', action='store_true', default=False, help='use indicator: was lookup successful or not')
     oParser.add_option('-p', '--partial', default='', help='settings for partial lookup')
     oParser.add_option('-U', '--unquoted', action='store_true', default=False, help='No handling of quotes in CSV file')
+    oParser.add_option('--useheader', default='', help='Header to use for i(nput) or l(ookup) file')
     (options, args) = oParser.parse_args()
 
-    options.separator = ParseOptionSeparator(options.separator, 3)
-    if options.separator == None:
+    if CheckOptions(options):
         return
     if len(args) != 6:
         oParser.print_help()
