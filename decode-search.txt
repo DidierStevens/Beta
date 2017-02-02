@@ -2,6 +2,10 @@
 expression ((byte + %i1:1-10%) ^ %i2:1-32%) % 0x100
 decoder base64
 pefile
+#hancitor maldoc 2017/02
+expression ((byte + %i1:1-10%) ^ IFF(position % 2 == 0, %i2:1-32%, %i3:1-32%)) % 0x100
+decoder base64
+pefile
 expression ((byte + %i1:1-10%) ^ %i2:1-32%) % 0x100
 decoder base64
 string This program cannot be run in DOS mode.

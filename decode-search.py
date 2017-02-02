@@ -3,7 +3,7 @@
 __description__ = 'Tool to decode and search'
 __author__ = 'Didier Stevens'
 __version__ = '0.0.2'
-__date__ = '2016/11/08'
+__date__ = '2017/02/02'
 
 """
 
@@ -21,6 +21,8 @@ History:
   2016/10/12: global action
   2016/11/02: fixes
   2016/11/08: try 4 base64 cases in DecodeData
+  2016/11/16: unique byte count
+  2017/02/02: added position to be used in expression
 
 Todo:
   add YARA search term support
@@ -362,6 +364,7 @@ def CalculateByteStatistics(dPrevalence):
     countNullByte = dPrevalence[0]
     countControlBytes = 0
     countWhitespaceBytes = 0
+    countUniqueBytes = 0
     for iter in range(1, 0x21):
         if chr(iter) in string.whitespace:
             countWhitespaceBytes += dPrevalence[iter]
@@ -379,7 +382,8 @@ def CalculateByteStatistics(dPrevalence):
         if dPrevalence[iter] > 0:
             prevalence = float(dPrevalence[iter]) / float(sumValues)
             entropy += - prevalence * math.log(prevalence, 2)
-    return sumValues, entropy, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes
+            countUniqueBytes += 1
+    return sumValues, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes
 
 def CalculateFileMetaData(data):
     dPrevalence = {}
@@ -388,9 +392,9 @@ def CalculateFileMetaData(data):
     for char in data:
         dPrevalence[ord(char)] += 1
 
-    fileSize, entropy, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateByteStatistics(dPrevalence)
+    fileSize, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateByteStatistics(dPrevalence)
     magicPrintable, magicHex = Magic(data[0:4])
-    return hashlib.md5(data).hexdigest(), magicPrintable, magicHex, fileSize, entropy, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes
+    return hashlib.md5(data).hexdigest(), magicPrintable, magicHex, fileSize, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes
 
 def ExtractStringsASCII(data):
     regex = REGEX_STANDARD + '{%d,}'
@@ -567,6 +571,8 @@ def DecodeData(data, decoder):
         result = []
         for base64string in re.findall('[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/]+={0,2}', data):
 #            if len(base64string) % 4 == 0:
+            # base64 strings are multiples of 4 characters.
+            # in case the actual base64 string is preceded by a valid base64 character or more, we strip 0 to 3 prefix characters
             for iter in range(4):
                 try:
                     base64data = binascii.a2b_base64(base64string[iter:])
@@ -595,7 +601,7 @@ def DecodeSearchSub(exprfilename, data, options):
                 expression = expression.replace(variable[0], variable[1])
             if options.verbose:
                 print(expression)
-            for translateddata in DecodeData(eval("''.join([chr(" + expression + ") for byte in map(ord, data)])"), oExpression.decoder):
+            for translateddata in DecodeData(eval("''.join([chr(" + expression + ") for position, byte in enumerate(map(ord, data))])"), oExpression.decoder):
                 for oTerm in oExpression.terms:
                     position = oTerm.Search(translateddata)
                     if position != -1:
@@ -613,10 +619,11 @@ def DecodeSearchSub(exprfilename, data, options):
                             print(' Expression:  %s' % expression)
                             if oExpression.decoder != None:
                                 print(' Decoder:     %s' % oExpression.decoder)
-                            filehash, magicPrintable, magicHex, fileSize, entropy, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateFileMetaData(translateddata)
+                            filehash, magicPrintable, magicHex, fileSize, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateFileMetaData(translateddata)
                             print(' %s: %s' % ('MD5', filehash))
                             print(' %s: %d' % ('Size', fileSize))
                             print(' %s: %f' % ('Entropy', entropy))
+                            print(' %s: %d (%.2f%%)' % ('Unique bytes', countUniqueBytes, countUniqueBytes / 2.560))
                             print(' %s: %s' % ('Magic HEX', magicHex))
                             print(' %s: %s' % ('Magic ASCII', magicPrintable))
                             print(' %s: %s' % ('Null bytes', countNullByte))
