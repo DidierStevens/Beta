@@ -1,3 +1,7 @@
+expression ((byte ^ IFF(position % 2 == 0, %i2:1-32%, %i3:1-32%)) - %i1:1-10%) % 0x100
+reverse
+string TVqQAAMAAAAEAAAA
+string VGhpcyBwcm9ncmFtIGNhbm5vdCBiZSBydW4gaW4gRE9TIG1vZGUu
 #hancitor maldoc 2016/09
 expression ((byte + %i1:1-10%) ^ %i2:1-32%) % 0x100
 decoder base64

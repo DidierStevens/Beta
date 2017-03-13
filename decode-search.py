@@ -3,7 +3,7 @@
 __description__ = 'Tool to decode and search'
 __author__ = 'Didier Stevens'
 __version__ = '0.0.2'
-__date__ = '2017/02/02'
+__date__ = '2017/03/13'
 
 """
 
@@ -23,6 +23,7 @@ History:
   2016/11/08: try 4 base64 cases in DecodeData
   2016/11/16: unique byte count
   2017/02/02: added position to be used in expression
+  2017/03/13: added reverse search
 
 Todo:
   add YARA search term support
@@ -42,6 +43,7 @@ import hashlib
 import collections
 import glob
 import struct
+import itertools
 if sys.version_info[0] >= 3:
     from io import StringIO
 else:
@@ -408,19 +410,20 @@ def ExtractStrings(data):
     return ExtractStringsASCII(data) + ExtractStringsUNICODE(data)
 
 
-def GenerateValues(variables, values, results):
+def GenerateValues(variables, values, combinations):
     if variables != []:
         for i in range(int(variables[0][1][0]), int(variables[0][1][1]) + 1):
-            GenerateValues(variables[1:], values + [[variables[0][0], str(i)]], results)
+            GenerateValues(variables[1:], values + [[variables[0][0], str(i)]], combinations)
     else:
-        results.append(values)
+        combinations.append(values)
 
 class cExpression():
-    def __init__(self, expression, decoder, terms, actions):
+    def __init__(self, expression, decoder, terms, actions, reverseSearch):
         self.expression = expression
         self.decoder= decoder
         self.terms = terms
         self.actions = actions
+        self.reverseSearch = reverseSearch
 
 class cTermString():
     def __init__(self, string):
@@ -519,16 +522,18 @@ def ParseExpressionsFile(exprfilename):
     decoder = None
     actions = []
     actions.extend(actionsGlobal)
+    reverseSearch = False
     for line in linesSearch:
         if line.startswith('expression '):
             if expression != None and terms != []:
-                expressions.append(cExpression(expression, decoder, terms, actions))
+                expressions.append(cExpression(expression, decoder, terms, actions, reverseSearch))
                 expression = None
                 terms = []
                 terms.extend(termsGlobal)
                 decoder = None
                 actions = []
                 actions.extend(actionsGlobal)
+                reverseSearch = False
             if expression != None:
                 print('Parsing error: string expected')
                 return []
@@ -539,6 +544,7 @@ def ParseExpressionsFile(exprfilename):
                 decoder = None
                 actions = []
                 actions.extend(actionsGlobal)
+                reverseSearch = False
         elif ParseTerm(line) != None:
             if expression == None:
                 print('Parsing error: no expression')
@@ -557,11 +563,17 @@ def ParseExpressionsFile(exprfilename):
                 return []
             else:
                 actions.append(line[7:])
+        elif line == 'reverse':
+            if expression == None:
+                print('Parsing error: no expression')
+                return []
+            else:
+                reverseSearch = True
         else:
             print('Parsing error: unknown line: ' % line)
             return []
     if expression != None and terms != []:
-        expressions.append(cExpression(expression, decoder, terms, actions))
+        expressions.append(cExpression(expression, decoder, terms, actions, reverseSearch))
     return expressions
 
 def DecodeData(data, decoder):
@@ -584,7 +596,25 @@ def DecodeData(data, decoder):
         print('Unknown decoder: ' + decoder)
         return []
 
+def InstantiateExpression(standardExpr, combination):
+    expression = standardExpr
+    for variable in combination:
+        expression = expression.replace(variable[0], variable[1])
+    return expression
+
+def PermuteIfNecessary(reverseCombination, combination):
+    if reverseCombination == []:
+        return [combination]
+    if reverseCombination == combination:
+        combinations = []
+        variables = [variable for variable, value in combination]
+        for values in itertools.permutations([value for variable, value in combination]):
+            combinations.append([[variables[i], values[i]] for i in range(len(variables))])
+        return combinations
+    return []
+
 def DecodeSearchSub(exprfilename, data, options):
+    reverseCombination = []
     for oExpression in ParseExpressionsFile(exprfilename):
         dVariables = {}
         standardExpr = oExpression.expression
@@ -593,55 +623,65 @@ def DecodeSearchSub(exprfilename, data, options):
                 variable = '%i' + oMatch.groups()[0] + '%'
                 standardExpr = standardExpr.replace(oMatch.group(0), variable)
                 dVariables[oMatch.groups()[0]] = [variable, oMatch.groups()[1].split('-')]
-        results = []
-        GenerateValues([dVariables[key] for key in sorted(dVariables.keys())], [], results)
-        for combination in results:
-            expression = standardExpr
-            for variable in combination:
-                expression = expression.replace(variable[0], variable[1])
+        combinations = []
+        GenerateValues([dVariables[key] for key in sorted(dVariables.keys())], [], combinations)
+        for combination in combinations:
+            expression = InstantiateExpression(standardExpr, combination)
             if options.verbose:
                 print(expression)
-            for translateddata in DecodeData(eval("''.join([chr(" + expression + ") for position, byte in enumerate(map(ord, data))])"), oExpression.decoder):
+            if oExpression.reverseSearch:
                 for oTerm in oExpression.terms:
-                    position = oTerm.Search(translateddata)
+                    position = data.find(eval("''.join([chr(" + expression + ") for position, byte in enumerate(map(ord, oTerm.ToString()))])"))
                     if position != -1:
-                        if options.asciidump:
-                            StdoutWriteChunked(HexAsciiDump(translateddata))
-                        elif  options.hexdump:
-                            StdoutWriteChunked(HexDump(translateddata))
-                        elif options.dump:
-                            IfWIN32SetBinary(sys.stdout)
-                            StdoutWriteChunked(translateddata)
-                        else:
-                            print('Found:')
-                            print(' Search term: %s' % oTerm.ToString())
-                            print(' Position:    0x%08x (%d)' % (position, position))
-                            print(' Expression:  %s' % expression)
-                            if oExpression.decoder != None:
-                                print(' Decoder:     %s' % oExpression.decoder)
-                            filehash, magicPrintable, magicHex, fileSize, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateFileMetaData(translateddata)
-                            print(' %s: %s' % ('MD5', filehash))
-                            print(' %s: %d' % ('Size', fileSize))
-                            print(' %s: %f' % ('Entropy', entropy))
-                            print(' %s: %d (%.2f%%)' % ('Unique bytes', countUniqueBytes, countUniqueBytes / 2.560))
-                            print(' %s: %s' % ('Magic HEX', magicHex))
-                            print(' %s: %s' % ('Magic ASCII', magicPrintable))
-                            print(' %s: %s' % ('Null bytes', countNullByte))
-                            print(' %s: %s' % ('Control bytes', countControlBytes))
-                            print(' %s: %s' % ('Whitespace bytes', countWhitespaceBytes))
-                            print(' %s: %s' % ('Printable bytes', countPrintableBytes))
-                            print(' %s: %s' % ('High bytes', countHighBytes))
-                            for action in oExpression.actions:
-                                if action == 'strings':
-                                    print('Strings:')
-                                    for extractedstring in ExtractStrings(translateddata):
-                                        print(extractedstring)
-                                elif action.startswith('regex '):
-                                    print('Regex:')
-                                    for matchedstring in re.compile(action[6:]).findall(translateddata):
-                                        print(matchedstring)
-                        if not options.all:
-                            return
+                        print('Found reverse:')
+                        print(' Search term: %s' % oTerm.ToString())
+                        print(' Position:    0x%08x (%d)' % (position, position))
+                        print(' Expression:  %s' % expression)
+                        reverseCombination = combination
+            else:
+                for newCombination in PermuteIfNecessary(reverseCombination, combination):
+                    expression = InstantiateExpression(standardExpr, newCombination)
+                    for translateddata in DecodeData(eval("''.join([chr(" + expression + ") for position, byte in enumerate(map(ord, data))])"), oExpression.decoder):
+                        for oTerm in oExpression.terms:
+                            position = oTerm.Search(translateddata)
+                            if position != -1:
+                                if options.asciidump:
+                                    StdoutWriteChunked(HexAsciiDump(translateddata))
+                                elif  options.hexdump:
+                                    StdoutWriteChunked(HexDump(translateddata))
+                                elif options.dump:
+                                    IfWIN32SetBinary(sys.stdout)
+                                    StdoutWriteChunked(translateddata)
+                                else:
+                                    print('Found:')
+                                    print(' Search term: %s' % oTerm.ToString())
+                                    print(' Position:    0x%08x (%d)' % (position, position))
+                                    print(' Expression:  %s' % expression)
+                                    if oExpression.decoder != None:
+                                        print(' Decoder:     %s' % oExpression.decoder)
+                                    filehash, magicPrintable, magicHex, fileSize, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes = CalculateFileMetaData(translateddata)
+                                    print(' %s: %s' % ('MD5', filehash))
+                                    print(' %s: %d' % ('Size', fileSize))
+                                    print(' %s: %f' % ('Entropy', entropy))
+                                    print(' %s: %d (%.2f%%)' % ('Unique bytes', countUniqueBytes, countUniqueBytes / 2.560))
+                                    print(' %s: %s' % ('Magic HEX', magicHex))
+                                    print(' %s: %s' % ('Magic ASCII', magicPrintable))
+                                    print(' %s: %s' % ('Null bytes', countNullByte))
+                                    print(' %s: %s' % ('Control bytes', countControlBytes))
+                                    print(' %s: %s' % ('Whitespace bytes', countWhitespaceBytes))
+                                    print(' %s: %s' % ('Printable bytes', countPrintableBytes))
+                                    print(' %s: %s' % ('High bytes', countHighBytes))
+                                    for action in oExpression.actions:
+                                        if action == 'strings':
+                                            print('Strings:')
+                                            for extractedstring in ExtractStrings(translateddata):
+                                                print(extractedstring)
+                                        elif action.startswith('regex '):
+                                            print('Regex:')
+                                            for matchedstring in re.compile(action[6:]).findall(translateddata):
+                                                print(matchedstring)
+                                if not options.all:
+                                    return
 
 def DecodeSearch(exprfilename, filenames, options):
     for filename in ExpandFilenameArguments(filenames):
