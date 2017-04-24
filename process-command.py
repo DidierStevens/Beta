@@ -3,7 +3,7 @@
 __description__ = 'Process command'
 __author__ = 'Didier Stevens'
 __version__ = '0.0.1'
-__date__ = '2016/01/20'
+__date__ = '2017/04/24'
 
 """
 
@@ -36,6 +36,7 @@ History:
   2015/09/04: updated man
   2015/09/13: added option -q
   2016/01/20: added VariableNameValue
+  2017/04/24: added support for @ stdin
 
 Todo:
 """
@@ -285,7 +286,10 @@ class cVariables():
 
 def File2Strings(filename):
     try:
-        f = open(filename, 'r')
+        if filename == '':
+            f = sys.stdin
+        else:
+            f = open(filename, 'r')
     except:
         return None
     try:
@@ -293,7 +297,8 @@ def File2Strings(filename):
     except:
         return None
     finally:
-        f.close()
+        if f != sys.stdin:
+            f.close()
 
 def ParseCommand(filecommand, isRepeatCommand):
     path = []
