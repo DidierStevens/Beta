@@ -150,7 +150,7 @@ def IFF(expression, valueTrue, valueFalse):
 def FormatTime(epoch=None):
     if epoch == None:
         epoch = time.time()
-    return '%04d/%02d/%02d %02d:%02d:%02d' % time.localtime(epoch)[0:6]
+    return '%04d/%02d/%02d %02d:%02d:%02d' % time.gmtime(epoch)[0:6]
 
 class cOutput():
     def __init__(self, filename=None):
