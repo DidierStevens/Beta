@@ -203,7 +203,7 @@ def MetatoolSingle(command, filename, oOutput, options):
         fIn = gzip.GzipFile(filename, 'rb')
     else:
         fIn = open(filename, 'r')
-    oRE = re.compile('https?://[^/]+/([^/]+)/')
+    oRE = re.compile('(?:https?://[^/]+)?/([^/]+)/?')
     for line in ProcessFile(fIn, False):
         oSearch = oRE.search(line)
         if oSearch != None:
