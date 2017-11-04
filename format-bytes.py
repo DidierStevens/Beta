@@ -2,8 +2,8 @@
 
 __description__ = 'Template binary file argument'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.1'
-__date__ = '2017/07/11'
+__version__ = '0.0.2'
+__date__ = '2017/11/04'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -14,6 +14,7 @@ History:
   2016/12/03: start
   2017/06/16: refactoring to cBinaryFile
   2017/07/11: added CutData
+  2017/11/04: 0.0.2 refactoring; continued; added options -c & -s
 
 Todo:
 """
@@ -30,10 +31,13 @@ import glob
 import textwrap
 import re
 import struct
+import string
+import math
+import time
 if sys.version_info[0] >= 3:
-    from io import StringIO
+    from io import BytesIO as DataIO
 else:
-    from cStringIO import StringIO
+    from cStringIO import StringIO as DataIO
 
 def PrintManual():
     manual = '''
@@ -51,6 +55,13 @@ def C2BIP3(string):
     else:
         return string
 
+#Convert 2 Integer If Python 2
+def C2IIP2(data):
+    if sys.version_info[0] > 2:
+        return data
+    else:
+        return ord(data)
+
 # CIC: Call If Callable
 def CIC(expression):
     if callable(expression):
@@ -64,6 +75,17 @@ def IFF(expression, valueTrue, valueFalse):
         return CIC(valueTrue)
     else:
         return CIC(valueFalse)
+
+#----------------------------------------------------------------------------------------------------
+#import random
+#import binascii
+#import zipfile
+#import gzip
+#import sys
+#if sys.version_info[0] >= 3:
+#    from io import BytesIO as DataIO
+#else:
+#    from cStringIO import StringIO as DataIO
 
 def LoremIpsumSentence(minimum, maximum):
     words = ['lorem', 'ipsum', 'dolor', 'sit', 'amet', 'consectetur', 'adipiscing', 'elit', 'etiam', 'tortor', 'metus', 'cursus', 'sed', 'sollicitudin', 'ac', 'sagittis', 'eget', 'massa', 'praesent', 'sem', 'fermentum', 'dignissim', 'in', 'vel', 'augue', 'scelerisque', 'auctor', 'libero', 'nam', 'a', 'gravida', 'odio', 'duis', 'vestibulum', 'vulputate', 'quam', 'nec', 'cras', 'nibh', 'feugiat', 'ut', 'vitae', 'ornare', 'justo', 'orci', 'varius', 'natoque', 'penatibus', 'et', 'magnis', 'dis', 'parturient', 'montes', 'nascetur', 'ridiculus', 'mus', 'curabitur', 'nisl', 'egestas', 'urna', 'iaculis', 'lectus', 'maecenas', 'ultrices', 'velit', 'eu', 'porta', 'hac', 'habitasse', 'platea', 'dictumst', 'integer', 'id', 'commodo', 'mauris', 'interdum', 'malesuada', 'fames', 'ante', 'primis', 'faucibus', 'accumsan', 'pharetra', 'aliquam', 'nunc', 'at', 'est', 'non', 'leo', 'nulla', 'sodales', 'porttitor', 'facilisis', 'aenean', 'condimentum', 'rutrum', 'facilisi', 'tincidunt', 'laoreet', 'ultricies', 'neque', 'diam', 'euismod', 'consequat', 'tempor', 'elementum', 'lobortis', 'erat', 'ligula', 'risus', 'donec', 'phasellus', 'quisque', 'vivamus', 'pellentesque', 'tristique', 'venenatis', 'purus', 'mi', 'dictum', 'posuere', 'fringilla', 'quis', 'magna', 'pretium', 'felis', 'pulvinar', 'lacinia', 'proin', 'viverra', 'lacus', 'suscipit', 'aliquet', 'dui', 'molestie', 'dapibus', 'mollis', 'suspendisse', 'sapien', 'blandit', 'morbi', 'tellus', 'enim', 'maximus', 'semper', 'arcu', 'bibendum', 'convallis', 'hendrerit', 'imperdiet', 'finibus', 'fusce', 'congue', 'ullamcorper', 'placerat', 'nullam', 'eros', 'habitant', 'senectus', 'netus', 'turpis', 'luctus', 'volutpat', 'rhoncus', 'mattis', 'nisi', 'ex', 'tempus', 'eleifend', 'vehicula', 'class', 'aptent', 'taciti', 'sociosqu', 'ad', 'litora', 'torquent', 'per', 'conubia', 'nostra', 'inceptos', 'himenaeos']
@@ -207,7 +229,7 @@ def Hex2Bytes(hexadecimal):
         return binascii.a2b_hex(hexadecimal)
     except:
         return None
-    
+
 def InterpretHexInteger(token):
     if token[0] != STATE_IDENTIFIER:
         return None
@@ -218,7 +240,7 @@ def InterpretHexInteger(token):
         return None
     integer = 0
     for byte in bytes:
-        integer = integer * 0x100 + ord(byte)
+        integer = integer * 0x100 + C2IIP2(byte)
     return integer
 
 def InterpretNumber(token):
@@ -237,16 +259,21 @@ def InterpretBytes(token):
         return None
     return Hex2Bytes(token[1][2:])
 
-def CheckFunction(functionname, arguments, countarguments):
-    if countarguments == 0 and len(arguments) != 0:
-        print('Error: function %s takes no arguments, %d are given' % (functionname, len(arguments)))
-        return True
-    if countarguments == 1 and len(arguments) != 1:
-        print('Error: function %s takes 1 argument, %d are given' % (functionname, len(arguments)))
-        return True
-    if countarguments != len(arguments):
-        print('Error: function %s takes %d arguments, %d are given' % (functionname, countarguments, len(arguments)))
-        return True
+def CheckFunction(functionname, arguments, countarguments, maxcountarguments=None):
+    if maxcountarguments == None:
+        if countarguments == 0 and len(arguments) != 0:
+            print('Error: function %s takes no arguments, %d are given' % (functionname, len(arguments)))
+            return True
+        if countarguments == 1 and len(arguments) != 1:
+            print('Error: function %s takes 1 argument, %d are given' % (functionname, len(arguments)))
+            return True
+        if countarguments != len(arguments):
+            print('Error: function %s takes %d arguments, %d are given' % (functionname, countarguments, len(arguments)))
+            return True
+    else:
+        if len(arguments) < countarguments or len(arguments) > maxcountarguments:
+            print('Error: function %s takes between %d and %d arguments, %d are given' % (functionname, countarguments, maxcountarguments, len(arguments)))
+            return True
     return False
 
 def CheckNumber(argument, minimum=None, maximum=None):
@@ -261,7 +288,7 @@ def CheckNumber(argument, minimum=None, maximum=None):
         print('Error: argument should be maximum %d: %d' % (maximum, number))
         return None
     return number
-    
+
 FUNCTIONNAME_REPEAT = 'repeat'
 FUNCTIONNAME_RANDOM = 'random'
 FUNCTIONNAME_CHR = 'chr'
@@ -300,12 +327,18 @@ def Interpret(expression):
                 return None
             decoded += LoremIpsum(number)
         elif functionname == FUNCTIONNAME_CHR:
-            if CheckFunction(functionname, arguments, 1):
+            if CheckFunction(functionname, arguments, 1, 2):
                 return None
             number = CheckNumber(arguments[0], minimum=1, maximum=255)
             if number == None:
                 return None
-            decoded += chr(number)
+            if len(arguments) == 1:
+                decoded += chr(number)
+            else:
+                number2 = CheckNumber(arguments[1], minimum=1, maximum=255)
+                if number2 == None:
+                    return None
+                decoded += ''.join([chr(n) for n in range(number, number2 + 1)])
         else:
             print('Error: unknown function: %s' % functionname)
             return None
@@ -347,7 +380,7 @@ class cBinaryFile:
                 msvcrt.setmode(sys.stdin.fileno(), os.O_BINARY)
             self.fIn = sys.stdin
         elif decoded != '':
-            self.fIn = StringIO(decoded)
+            self.fIn = DataIO(decoded)
         elif not self.noextraction and self.filename.lower().endswith('.zip'):
             self.oZipfile = zipfile.ZipFile(self.filename, 'r')
             if len(self.oZipfile.infolist()) == 1:
@@ -371,6 +404,8 @@ class cBinaryFile:
         data = self.fIn.read()
         self.close()
         return data
+
+#----------------------------------------------------------------------------------------------------
 
 def File2Strings(filename):
     try:
@@ -545,32 +580,76 @@ def CutData(stream, cutArgument):
 
     return stream[positionBegin:positionEnd]
 
-def ProcessBinaryFile(filename, cutexpression, options):
+def Timestamp2StringLog(stime):
+    return '%04d%02d%02d-%02d%02d%02d' % stime[0:6]
+
+def Timestamp2StringHuman(stime):
+    return '%04d/%02d/%02d %02d:%02d:%02d' % stime[0:6]
+
+def TimestampLocal(epoch=None):
+    if epoch == None:
+        return Timestamp2StringHuman(time.localtime())
+    else:
+        return Timestamp2StringHuman(time.localtime(epoch))
+
+def TimestampUTC(epoch=None):
+    if epoch == None:
+        return Timestamp2StringHuman(time.gmtime())
+    else:
+        return Timestamp2StringHuman(time.gmtime(epoch))
+
+def FormatBytesData(data, position, options):
+    if len(data) == 0:
+        return
+    bytes = [C2IIP2(d) for d in data]
+    
+    if position < 0:
+        prefix = ''
+    else:
+        prefix = '%02X ' % position
+
+    print(prefix + '1I: s %d u %d' % (struct.unpack('b', data[0:1])[0], struct.unpack('B', data[0:1])[0]))
+
+    if len(data) < 2:
+        return
+    print(prefix + '2I: sl %d ul %d sb %d ub %d' % (struct.unpack('<h', data[0:2])[0], struct.unpack('<H', data[0:2])[0], struct.unpack('>h', data[0:2])[0], struct.unpack('>H', data[0:2])[0]))
+
+    if len(data) < 4:
+        return
+    print(prefix + '4I: sl %d ul %d sb %d ub %d' % (struct.unpack('<i', data[0:4])[0], struct.unpack('<I', data[0:4])[0], struct.unpack('>i', data[0:4])[0], struct.unpack('>I', data[0:4])[0]))
+    print(prefix + '4F: l %f b %f' % (struct.unpack('<f', data[0:4])[0], struct.unpack('>f', data[0:4])[0]))
+    print(prefix + '4N: b %d.%d.%d.%d l %d.%d.%d.%d' % (bytes[0], bytes[1], bytes[2], bytes[3], bytes[3], bytes[2], bytes[1], bytes[0]))
+    print(prefix + '4E: l %s b %s' % (TimestampUTC(struct.unpack('<I', data[0:4])[0]), TimestampUTC(struct.unpack('>I', data[0:4])[0])))
+
+    if len(data) < 8:
+        return
+    print(prefix + '8I: sl %d ul %d sb %d ub %d' % (struct.unpack('<q', data[0:8])[0], struct.unpack('<Q', data[0:8])[0], struct.unpack('>q', data[0:8])[0], struct.unpack('>Q', data[0:8])[0]))
+    print(prefix + '8F: l %f b %f' % (struct.unpack('<d', data[0:8])[0], struct.unpack('>d', data[0:8])[0]))
+
+    if len(data) < 16:
+        return
+    print(prefix + '16G: b %02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X m {%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-%02X%02X%02X%02X%02X%02X}' % tuple(bytes[0:16] + bytes[3::-1] + bytes[5:3:-1] + bytes[7:5:-1] + bytes[8:16]))
+
+def FormatBytesSingle(filename, cutexpression, options):
     oBinaryFile = cBinaryFile(filename, C2BIP3(options.password), options.noextraction, options.literalfilenames)
     if cutexpression == '':
-        data = oBinaryFile.fIn.read(8)
+        data = oBinaryFile.fIn.read(options.count * options.step + 16)
     else:
         data = CutData(oBinaryFile.fIn.read(), cutexpression)
     oBinaryFile.close()
     print('File: %s' % filename)
-    if len(data) == 0:
-        return
-    print('1I: s %d u %d' % (struct.unpack('b', data[0:1])[0], struct.unpack('B', data[0:1])[0]))
-    if len(data) < 2:
-        return
-    print('2I: sl %d ul %d sb %d ub %d' % (struct.unpack('<h', data[0:2])[0], struct.unpack('<H', data[0:2])[0], struct.unpack('>h', data[0:2])[0], struct.unpack('>H', data[0:2])[0]))
-    if len(data) < 4:
-        return
-    print('4I: sl %d ul %d sb %d ub %d' % (struct.unpack('<i', data[0:4])[0], struct.unpack('<I', data[0:4])[0], struct.unpack('>i', data[0:4])[0], struct.unpack('>I', data[0:4])[0]))
-    print('4F: l %f b %f' % (struct.unpack('<f', data[0:4])[0], struct.unpack('>f', data[0:4])[0]))
-    if len(data) < 8:
-        return
-    print('8I: sl %d ul %d sb %d ub %d' % (struct.unpack('<q', data[0:8])[0], struct.unpack('<Q', data[0:8])[0], struct.unpack('>q', data[0:8])[0], struct.unpack('>Q', data[0:8])[0]))
-    print('8F: l %f b %f' % (struct.unpack('<d', data[0:8])[0], struct.unpack('>d', data[0:8])[0]))
+    print('s:signed u:unsigned l:little-endian b:big-endian m:mixed-endian')
+    if options.count == 1:
+        FormatBytesData(data, -1, options)
+    else:
+        position = 0
+        for iter in range(options.count):
+            FormatBytesData(data[position:], position, options)
+            position += options.step
 
-def ProcessBinaryFiles(filenames, options):
+def FormatBytesFiles(filenames, options):
     for filename, cutexpression in filenames:
-        ProcessBinaryFile(filename, cutexpression, options)
+        FormatBytesSingle(filename, cutexpression, options)
 
 def Main():
     moredesc = '''
@@ -581,6 +660,8 @@ https://DidierStevens.com'''
 
     oParser = optparse.OptionParser(usage='usage: %prog [options] [file ...]\n' + __description__ + moredesc, version='%prog ' + __version__)
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
+    oParser.add_option('-c', '--count', type=int, default=1, help='select item nr for dumping (a for all)')
+    oParser.add_option('-s', '--step', type=int, default=1, help='select item nr for dumping (a for all)')
     oParser.add_option('--password', default='infected', help='The ZIP password to be used (default infected)')
     oParser.add_option('--noextraction', action='store_true', default=False, help='Do not extract from archive file')
     oParser.add_option('--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')
@@ -591,7 +672,7 @@ https://DidierStevens.com'''
         PrintManual()
         return
 
-    ProcessBinaryFiles(ExpandFilenameArguments(args, options.literalfilenames), options)
+    FormatBytesFiles(ExpandFilenameArguments(args, options.literalfilenames), options)
 
 if __name__ == '__main__':
     Main()
