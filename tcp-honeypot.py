@@ -22,7 +22,7 @@ THP_REFERENCE = 'reference'
 THP_SSL = 'ssl'
 THP_CERTFILE = 'certfile'
 THP_KEYFILE = 'keyfile'
-THP_SSLCONTECT = 'sslcontext'
+THP_SSLCONTEXT = 'sslcontext'
 THP_BANNER = 'banner'
 THP_REPLY = 'reply'
 THP_MATCH = 'match'
@@ -97,12 +97,12 @@ The listener can be configured to send a reply after each read, this is done by 
 To increase the interactivity of the honeypot, keywords can be defined with replies. This is done by adding a new dictionary to the dictionary with key THP_MATCH.
 Entries in this match dictionary are regular expressions (THP_REGEX): when a regular expression matches read data, the corresponding reply is send or action performed (e.g. disconnect).
 
-A listener can be configured to accept SSL/TLS connections by adding key THP_SSL to the listener dictionary with a dictionary as value specifying the certificate (THP_CERTFILE) and key (THP_KEYFILE) to use.
+A listener can be configured to accept SSL/TLS connections by adding key THP_SSL to the listener dictionary with a dictionary as value specifying the certificate (THP_CERTFILE) and key (THP_KEYFILE) to use. If an SSL context can not be created (for example because of missing certificate file), the listener will fallback to TCP.
 
 When several ports need to behave the same, the dictionary can just contain a reference (THP_REFERENCE) to the port which contains the detailed description.
 
-Helper function TW_CRLF (Terminate With CR/LF) can be used to format replies and banners. It accepts a string or a list of strings.
-Replies can contain aliases: %TIME_GMT_RFC2822% and %TIME_GMT_EPOCH%, they will be instantiated when a reply is transmitted.
+Helper function TW_CRLF (Terminate With CR/LF) can be used to format replies and banners.
+Replies and banners can contain aliases: %TIME_GMT_RFC2822% and %TIME_GMT_EPOCH%, they will be instantiated when a reply is transmitted.
 
 Output is written to stdout and a log file.
 
@@ -216,7 +216,7 @@ class ConnectionThread(threading.Thread):
         if THP_REFERENCE in dListener:
             dListener = dListeners[dListener[THP_REFERENCE]]
         try:
-            oSSLContext = dListener.get(THP_SSLCONTECT, None)
+            oSSLContext = dListener.get(THP_SSLCONTEXT, None)
             if oSSLContext == None:
                 oSSLConnection = None
                 connection = oSocketConnection
@@ -302,9 +302,16 @@ def TCPHoneypot(options):
         sockets.append(oSocket)
         if THP_SSL in dListeners[port]:
             context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            context.load_cert_chain(certfile=dListeners[port][THP_SSL][THP_CERTFILE], keyfile=dListeners[port][THP_SSL][THP_KEYFILE])
-            dListeners[port][THP_SSLCONTECT] = context
-            oOutput.LineTimestamped('Created SSL context for %s %d' % oSocket.getsockname())
+            try:
+                context.load_cert_chain(certfile=dListeners[port][THP_SSL][THP_CERTFILE], keyfile=dListeners[port][THP_SSL][THP_KEYFILE])
+                dListeners[port][THP_SSLCONTEXT] = context
+                oOutput.LineTimestamped('Created SSL context for %s %d' % oSocket.getsockname())
+            except IOError as e:
+                if '[Errno 2]' in str(e):
+                    oOutput.LineTimestamped('Error reading certificate and/or key file: %s %s' % (dListeners[port][THP_SSL][THP_CERTFILE], dListeners[port][THP_SSL][THP_KEYFILE]))
+                else:
+                    oOutput.LineTimestamped('Error creating SSL context: %s' % e)
+                oOutput.LineTimestamped('SSL not enabled for %s %d' % oSocket.getsockname())
 
     if sockets == []:
         return
