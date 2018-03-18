@@ -39,6 +39,7 @@ def TW_CRLF(data):
 
 dListeners = {
     22:    {THP_BANNER: TW_CRLF('SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2')},
+    2222:  {THP_REFERENCE: 22},
     443:   {THP_SSL: {THP_CERTFILE: 'cert-20180317-161753.crt', THP_KEYFILE: 'key-20180317-161753.pem'},
             THP_REPLY: TW_CRLF(['HTTP/1.1 200 OK', 'Date: %TIME_GMT_RFC2822%', 'Server: Apache', 'Last-Modified: Wed, 06 Jul 2016 17:51:03 GMT', 'ETag: "59652-cfd-edc33a50bfec6"', 'Accept-Ranges: bytes', 'Content-Length: 285', 'Connection: close', 'Content-Type: text/html; charset=UTF-8', '', '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">', '<link rel="icon" type="image/png" href="favicon.png"/>', '<html>', ' <head>', '    <title>Home</title>', '   <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">', '  </head>', ' <body>Welcome home!</body>', '</html>'])
            },
@@ -284,6 +285,19 @@ def TCPHoneypot(options):
     sockets = []
 
     for port in dListeners.keys():
+        if THP_SSL in dListeners[port]:
+            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+            try:
+                context.load_cert_chain(certfile=dListeners[port][THP_SSL][THP_CERTFILE], keyfile=dListeners[port][THP_SSL][THP_KEYFILE])
+                dListeners[port][THP_SSLCONTEXT] = context
+                oOutput.LineTimestamped('Created SSL context for %d' % port)
+            except IOError as e:
+                if '[Errno 2]' in str(e):
+                    oOutput.LineTimestamped('Error reading certificate and/or key file: %s %s' % (dListeners[port][THP_SSL][THP_CERTFILE], dListeners[port][THP_SSL][THP_KEYFILE]))
+                else:
+                    oOutput.LineTimestamped('Error creating SSL context: %s' % e)
+                oOutput.LineTimestamped('SSL not enabled for %d' % port)
+
         oSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         oSocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -303,18 +317,6 @@ def TCPHoneypot(options):
         oSocket.listen(5)
         oOutput.LineTimestamped('Listening on %s %d' % oSocket.getsockname())
         sockets.append(oSocket)
-        if THP_SSL in dListeners[port]:
-            context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-            try:
-                context.load_cert_chain(certfile=dListeners[port][THP_SSL][THP_CERTFILE], keyfile=dListeners[port][THP_SSL][THP_KEYFILE])
-                dListeners[port][THP_SSLCONTEXT] = context
-                oOutput.LineTimestamped('Created SSL context for %s %d' % oSocket.getsockname())
-            except IOError as e:
-                if '[Errno 2]' in str(e):
-                    oOutput.LineTimestamped('Error reading certificate and/or key file: %s %s' % (dListeners[port][THP_SSL][THP_CERTFILE], dListeners[port][THP_SSL][THP_KEYFILE]))
-                else:
-                    oOutput.LineTimestamped('Error creating SSL context: %s' % e)
-                oOutput.LineTimestamped('SSL not enabled for %s %d' % oSocket.getsockname())
 
     if sockets == []:
         return
