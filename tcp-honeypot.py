@@ -107,6 +107,8 @@ Replies and banners can contain aliases: %TIME_GMT_RFC2822% and %TIME_GMT_EPOCH%
 Output is written to stdout and a log file.
 
 This tool has several command-line options, but it does not take arguments.
+
+It is written for Python 2.7 and was tested on Windows 10, Ubuntu 16 and CentOS 6.
 '''
     for line in manual.split('\n'):
         print(textwrap.fill(line, 79))
@@ -211,19 +213,19 @@ class ConnectionThread(threading.Thread):
 
     def run(self):
         oSocketConnection, address = self.oSocket.accept()
+        connectionID = '%s:%d-%s:%d' % (self.oSocket.getsockname() + address)
         oSocketConnection.settimeout(self.options.timeout)
         dListener = dListeners[self.oSocket.getsockname()[1]]
         if THP_REFERENCE in dListener:
             dListener = dListeners[dListener[THP_REFERENCE]]
         try:
+            oSSLConnection = None
             oSSLContext = dListener.get(THP_SSLCONTEXT, None)
             if oSSLContext == None:
-                oSSLConnection = None
                 connection = oSocketConnection
             else:
                 oSSLConnection = oSSLContext.wrap_socket(oSocketConnection, server_side=True)
                 connection = oSSLConnection
-            connectionID = '%s:%d-%s:%d' % (self.oSocket.getsockname() + address)
             self.oOutput.LineTimestamped('%s connection' % connectionID)
             if THP_BANNER in dListener:
                 connection.send(ReplaceAliases(dListener[THP_BANNER]))
@@ -255,6 +257,7 @@ class ConnectionThread(threading.Thread):
             self.oOutput.LineTimestamped('%s timeout' % connectionID)
         except Exception as e:
             self.oOutput.LineTimestamped('%s %s' % (connectionID, str(e)))
+        #a# is it necessary to close both oSSLConnection and oSocketConnection?
         if oSSLConnection != None:
             oSSLConnection.shutdown(socket.SHUT_RDWR)
             oSSLConnection.close()
