@@ -49,7 +49,7 @@ vars:
 ## Step 2: select the rules to enable or disable
 ##
 
-default-rule-path: C:\\Program Files (x86)\\Suricata\\rules\\
+default-rule-path: C:\\Suricata\\rules\\
 rule-files:
  - botcc.rules
  # - botcc.portgrouped.rules
@@ -109,7 +109,7 @@ rule-files:
 
 classification-file: C:\Program Files (x86)\Suricata\classification.config
 reference-config-file: C:\Program Files (x86)\Suricata\reference.config
-# threshold-file: C:\Program Files (x86)\Suricata\threshold.config
+threshold-file: C:\\Suricata\\threshold.config
 
 
 ##
@@ -119,7 +119,7 @@ reference-config-file: C:\Program Files (x86)\Suricata\reference.config
 # The default logging directory.  Any log or output file will be
 # placed here if its not specified with a full path name. This can be
 # overridden with the -l command line parameter.
-default-log-dir: C:\\Program Files (x86)\\Suricata\\log\\
+default-log-dir: C:\\Suricata\\log\\
 
 # global stats configuration
 stats:
@@ -165,9 +165,9 @@ outputs:
       #    batch-size: 10 ## number of entry to keep in buffer
       types:
         - alert:
-            # payload: yes             # enable dumping payload in Base64
-            # payload-buffer-size: 4kb # max size of payload buffer to output in eve-log
-            # payload-printable: yes   # enable dumping payload in printable (lossy) format
+            payload: yes             # enable dumping payload in Base64
+            payload-buffer-size: 4kb # max size of payload buffer to output in eve-log
+            payload-printable: yes   # enable dumping payload in printable (lossy) format
             # packet: yes              # enable dumping of packet (without stream segments)
             # http-body: yes           # enable dumping of http body in Base64
             # http-body-printable: yes # enable dumping of http body in printable format
@@ -525,7 +525,7 @@ logging:
   - file:
       enabled: yes
       level: info
-      filename: C:\Program Files (x86)\Suricata\logsuricata.log
+      filename: C:\Suricata\logsuricata.log
       # type: json
   - syslog:
       enabled: no
@@ -1000,7 +1000,7 @@ unix-command:
 
 # Magic file. The extension .mgc is added to the value here.
 #magic-file: /usr/share/file/magic
-magic-file: C:\Program Files (x86)\Suricata\magic.mgc
+magic-file: "C:\\Program Files (x86)\\Suricata\\magic.mgc"
 
 legacy:
   uricontent: enabled
