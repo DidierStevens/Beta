@@ -67,13 +67,15 @@ dListeners = {
     21:    {THP_LOOP: 10,
             THP_BANNER: TW_CRLF('220 FTP server ready. All transfers are logged. (FTP) [no EPSV]'),
             THP_MATCH: {
-                      'user':   {THP_REGEX: '^USER ',    THP_REPLY: TW_CRLF('331 Please specify the password.')},
-                      'pass':   {THP_REGEX: '^PASS ',    THP_REPLY: TW_CRLF('230 Login successful.')},
-                      'typea':  {THP_REGEX: '^TYPE A',   THP_REPLY: TW_CRLF('200 Switching to ASCII mode.')},
-                      'auth':   {THP_REGEX: '^AUTH',     THP_REPLY: TW_CRLF('530 Please login with USER and PASS.')},
-                      'help':   {THP_REGEX: '^HELP',     THP_REPLY: TW_CRLF(['220 FTP server ready. All transfers are logged. (FTP) [no EPSV]', '530 Please login with USER and PASS.'])},
-                     }
+                        'user':   {THP_REGEX: '^USER ',    THP_REPLY: TW_CRLF('331 Please specify the password.')},
+                        'pass':   {THP_REGEX: '^PASS ',    THP_REPLY: TW_CRLF('230 Login successful.')},
+                        'typea':  {THP_REGEX: '^TYPE A',   THP_REPLY: TW_CRLF('200 Switching to ASCII mode.')},
+                        'auth':   {THP_REGEX: '^AUTH',     THP_REPLY: TW_CRLF('530 Please login with USER and PASS.')},
+                        'pasv':   {THP_REGEX: '^PASV',     THP_REPLY: TW_CRLF('227 Entering Passive Mode (121)')},
+                        'help':   {THP_REGEX: '^HELP',     THP_REPLY: TW_CRLF(['220 FTP server ready. All transfers are logged. (FTP) [no EPSV]', '530 Please login with USER and PASS.'])},
+                       }
            },
+    121:   {},
 }
 
 import optparse
