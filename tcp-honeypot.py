@@ -2,8 +2,8 @@
 
 __description__ = 'TCP honeypot'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.1'
-__date__ = '2018/03/17'
+__version__ = '0.0.2'
+__date__ = '2018/03/22'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -14,6 +14,7 @@ History:
   2018/03/08: start
   2018/03/09: continue
   2018/03/17: continue, added ssl
+  2018/03/22: 0.0.2 added ssh
 
 Todo:
 """
@@ -23,6 +24,7 @@ THP_SSL = 'ssl'
 THP_CERTFILE = 'certfile'
 THP_KEYFILE = 'keyfile'
 THP_SSLCONTEXT = 'sslcontext'
+THP_SSH = 'ssh'
 THP_BANNER = 'banner'
 THP_REPLY = 'reply'
 THP_MATCH = 'match'
@@ -40,6 +42,11 @@ def TW_CRLF(data):
 dListeners = {
     22:    {THP_BANNER: TW_CRLF('SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2')},
     2222:  {THP_REFERENCE: 22},
+    2200:  {THP_SSH: {THP_KEYFILE: 'test_rsa.key', THP_BANNER: 'SSH-2.0-OpenSSH_6.6.1p1 Ubuntu-2ubuntu2'},
+            THP_BANNER: TW_CRLF('Last login: Thu Mar 22 18:10:31 2018 from 192.168.1.1') + 'root@vps:~# ',
+            THP_REPLY: '\r\nroot@vps:~# ',
+            THP_LOOP: 10
+           },
     443:   {THP_SSL: {THP_CERTFILE: 'cert-20180317-161753.crt', THP_KEYFILE: 'key-20180317-161753.pem'},
             THP_REPLY: TW_CRLF(['HTTP/1.1 200 OK', 'Date: %TIME_GMT_RFC2822%', 'Server: Apache', 'Last-Modified: Wed, 06 Jul 2016 17:51:03 GMT', 'ETag: "59652-cfd-edc33a50bfec6"', 'Accept-Ranges: bytes', 'Content-Length: 285', 'Connection: close', 'Content-Type: text/html; charset=UTF-8', '', '<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">', '<link rel="icon" type="image/png" href="favicon.png"/>', '<html>', ' <head>', '    <title>Home</title>', '   <meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1">', '  </head>', ' <body>Welcome home!</body>', '</html>'])
            },
@@ -86,6 +93,11 @@ import time
 import re
 import ssl
 import textwrap
+import sys
+try:
+    import paramiko
+except:
+    pass
 
 def PrintManual():
     manual = r'''
@@ -101,6 +113,8 @@ To increase the interactivity of the honeypot, keywords can be defined with repl
 Entries in this match dictionary are regular expressions (THP_REGEX): when a regular expression matches read data, the corresponding reply is send or action performed (e.g. disconnect).
 
 A listener can be configured to accept SSL/TLS connections by adding key THP_SSL to the listener dictionary with a dictionary as value specifying the certificate (THP_CERTFILE) and key (THP_KEYFILE) to use. If an SSL context can not be created (for example because of missing certificate file), the listener will fallback to TCP.
+
+A listener can be configured to accept SSH connections by adding key THP_SSH to the listener dictionary with a dictionary as value specifying the key (THP_KEYFILE) to use. This requires Python module paramiko, the listener will fallback to TCP if this module is missing.
 
 When several ports need to behave the same, the dictionary can just contain a reference (THP_REFERENCE) to the port which contains the detailed description.
 
@@ -205,6 +219,36 @@ def ParsePorts(expression):
             ports.extend(MyRange(ParseNumber(result[0]), ParseNumber(result[1])))
     return ports
 
+def ModuleLoaded(name):
+    return name in sys.modules
+
+if ModuleLoaded('paramiko'):
+    class cSSHServer(paramiko.ServerInterface):
+        def __init__(self, oOutput, connectionID):
+            self.oEvent = threading.Event()
+            self.oOutput = oOutput
+            self.connectionID = connectionID
+
+        def check_channel_request(self, kind, chanid):
+            if kind == 'session':
+                return paramiko.OPEN_SUCCEEDED
+            return paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
+
+        def check_auth_password(self, username, password):
+            self.oOutput.LineTimestamped('%s SSH username: %s' % (self.connectionID, username))
+            self.oOutput.LineTimestamped('%s SSH password: %s' % (self.connectionID, password))
+            return paramiko.AUTH_SUCCESSFUL
+
+        def get_allowed_auths(self, username):
+            return 'password'
+
+        def check_channel_shell_request(self, channel):
+            self.oEvent.set()
+            return True
+
+        def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
+            return True
+
 class ConnectionThread(threading.Thread):
     global dListeners
 
@@ -218,23 +262,61 @@ class ConnectionThread(threading.Thread):
         oSocketConnection, address = self.oSocket.accept()
         connectionID = '%s:%d-%s:%d' % (self.oSocket.getsockname() + address)
         oSocketConnection.settimeout(self.options.timeout)
+        self.oOutput.LineTimestamped('%s connection' % connectionID)
         dListener = dListeners[self.oSocket.getsockname()[1]]
         if THP_REFERENCE in dListener:
             dListener = dListeners[dListener[THP_REFERENCE]]
         try:
             oSSLConnection = None
             oSSLContext = dListener.get(THP_SSLCONTEXT, None)
-            if oSSLContext == None:
-                connection = oSocketConnection
-            else:
+            oSSHConnection = None
+            oSSHFile = None
+            if oSSLContext != None:
                 oSSLConnection = oSSLContext.wrap_socket(oSocketConnection, server_side=True)
                 connection = oSSLConnection
-            self.oOutput.LineTimestamped('%s connection' % connectionID)
+            elif dListener.get(THP_SSH, None) != None:
+                if ModuleLoaded('paramiko'):
+                    if THP_KEYFILE in dListener[THP_SSH]:
+                        oRSAKey = paramiko.RSAKey(filename=dListener[THP_SSH][THP_KEYFILE])
+                    else:
+                        oRSAKey = paramiko.RSAKey.generate(1024)
+                        self.oOutput.LineTimestamped('%s SSH generated RSA key' % connectionID)
+                    oTransport = paramiko.Transport(oSocketConnection)
+                    if THP_BANNER in dListener[THP_SSH]:
+                        oTransport.local_version = dListener[THP_SSH][THP_BANNER]
+                    oTransport.load_server_moduli()
+                    oTransport.add_server_key(oRSAKey)
+                    oSSHServer = cSSHServer(self.oOutput, connectionID)
+                    try:
+                        oTransport.start_server(server=oSSHServer)
+                    except paramiko.SSHException:
+                        self.oOutput.LineTimestamped('%s SSH negotiation failed' % connectionID)
+                        raise
+                    self.oOutput.LineTimestamped('%s SSH banner %s' % (connectionID, oTransport.remote_version))
+                    oSSHConnection = oTransport.accept(20)
+                    if oSSHConnection is None:
+                        self.oOutput.LineTimestamped('%s SSH no channel' % connectionID)
+                        raise
+                    self.oOutput.LineTimestamped('%s SSH authenticated' % connectionID)
+                    oSSHServer.oEvent.wait(10)
+                    if not oSSHServer.oEvent.is_set():
+                        self.oOutput.LineTimestamped('%s SSH no shell' % connectionID)
+                        raise
+                    connection = oSSHConnection
+                    oSSHFile = oSSHConnection.makefile('rU')
+                else:
+                    self.oOutput.LineTimestamped('%s can not create SSH server, Python module paramiko missing' % connectionID)
+                    connection = oSocketConnection
+            else:
+                connection = oSocketConnection
             if THP_BANNER in dListener:
                 connection.send(ReplaceAliases(dListener[THP_BANNER]))
                 self.oOutput.LineTimestamped('%s send banner' % connectionID)
             for i in range(0, dListener.get(THP_LOOP, 1)):
-                data = connection.recv(self.options.readbuffer)
+                if oSSHFile == None:
+                    data = connection.recv(self.options.readbuffer)
+                else:
+                    data = oSSHFile.readline()
                 self.oOutput.LineTimestamped('%s data %s' % (connectionID, repr(data)))
                 if THP_REPLY in dListener:
                     connection.send(ReplaceAliases(dListener[THP_REPLY]))
@@ -256,22 +338,24 @@ class ConnectionThread(threading.Thread):
                         if dMatchLongest.get(THP_ACTION, '') == THP_DISCONNECT:
                             self.oOutput.LineTimestamped('%s disconnecting' % connectionID)
                             break
+            #a# is it necessary to close both oSSLConnection and oSocketConnection?
+            if oSSLConnection != None:
+                oSSLConnection.shutdown(socket.SHUT_RDWR)
+                oSSLConnection.close()
+            oSocketConnection.shutdown(socket.SHUT_RDWR)
+            oSocketConnection.close()
+            self.oOutput.LineTimestamped('%s closed' % connectionID)
         except socket.timeout:
             self.oOutput.LineTimestamped('%s timeout' % connectionID)
         except Exception as e:
             self.oOutput.LineTimestamped('%s %s' % (connectionID, str(e)))
-        #a# is it necessary to close both oSSLConnection and oSocketConnection?
-        if oSSLConnection != None:
-            oSSLConnection.shutdown(socket.SHUT_RDWR)
-            oSSLConnection.close()
-        oSocketConnection.shutdown(socket.SHUT_RDWR)
-        oSocketConnection.close()
-        self.oOutput.LineTimestamped('%s closed' % connectionID)
 
 def TCPHoneypot(options):
     global dListeners
 
     oOutput = cOutput('tcp-honeypot-%s.log' % FormatTime(), True)
+    if ModuleLoaded('paramiko'):
+        paramiko.util.log_to_file('tcp-honeypot-ssh-%s.log' % FormatTime())
 
     if options.ports != '':
         oOutput.LineTimestamped('Ports specified via command-line option: %s' % options.ports)
