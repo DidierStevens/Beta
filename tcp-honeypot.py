@@ -2,8 +2,8 @@
 
 __description__ = 'TCP honeypot'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.2'
-__date__ = '2018/03/22'
+__version__ = '0.0.3'
+__date__ = '2018/09/09'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -15,6 +15,8 @@ History:
   2018/03/09: continue
   2018/03/17: continue, added ssl
   2018/03/22: 0.0.2 added ssh
+  2018/08/26: 0.0.3 added randomness when selecting a matching regular expression
+  2018/09/09: added support for listeners via arguments
 
 Todo:
 """
@@ -94,6 +96,7 @@ import re
 import ssl
 import textwrap
 import sys
+import random
 try:
     import paramiko
 except:
@@ -111,6 +114,7 @@ A banner can be transmitted before the first read, this is done by adding key TH
 The listener can be configured to send a reply after each read, this is done by adding key THP_REPLY to the dictionary with a string as the value (the reply).
 To increase the interactivity of the honeypot, keywords can be defined with replies. This is done by adding a new dictionary to the dictionary with key THP_MATCH.
 Entries in this match dictionary are regular expressions (THP_REGEX): when a regular expression matches read data, the corresponding reply is send or action performed (e.g. disconnect).
+If more than one regular expression matches, then the longest matching is selected. If there is more than one longest match (e.g. equal length), then one is selected at random.
 
 A listener can be configured to accept SSL/TLS connections by adding key THP_SSL to the listener dictionary with a dictionary as value specifying the certificate (THP_CERTFILE) and key (THP_KEYFILE) to use. If an SSL context can not be created (for example because of missing certificate file), the listener will fallback to TCP.
 
@@ -123,7 +127,7 @@ Replies and banners can contain aliases: %TIME_GMT_RFC2822% and %TIME_GMT_EPOCH%
 
 Output is written to stdout and a log file.
 
-This tool has several command-line options, but it does not take arguments.
+This tool has several command-line options, and can take listeners as arguments. These arguments are filenames of Python programs that define listeners.
 
 It is written for Python 2.7 and was tested on Windows 10, Ubuntu 16 and CentOS 6.
 '''
@@ -322,19 +326,19 @@ class ConnectionThread(threading.Thread):
                     connection.send(ReplaceAliases(dListener[THP_REPLY]))
                     self.oOutput.LineTimestamped('%s send reply' % connectionID)
                 if THP_MATCH in dListener:
-                    matchLongest = -1
-                    dMatchLongest = None
-                    matchnameLongest = None
+                    matches = []
                     for matchname, dMatch in dListener[THP_MATCH].items():
-                        oMatch = re.match(dMatch[THP_REGEX], data)
-                        if oMatch != None and len(oMatch.group()) > matchLongest:
-                            dMatchLongest = dMatch
-                            matchLongest = len(oMatch.group())
-                            matchnameLongest = matchname
-                    if dMatchLongest != None:
+                        oMatch = re.search(dMatch[THP_REGEX], data)
+                        if oMatch != None:
+                            matches.append([len(oMatch.group()), dMatch, matchname])
+                    if matches != []:
+                        matches = sorted(matches, reverse=True)
+                        longestmatches = [match for match in matches if match[0] == matches[0][0]]
+                        longestmatch = random.choice(longestmatches)
+                        dMatchLongest = longestmatch[1]
                         if THP_REPLY in dMatchLongest:
                             connection.send(ReplaceAliases(dMatchLongest[THP_REPLY]))
-                            self.oOutput.LineTimestamped('%s send %s reply' % (connectionID, matchnameLongest))
+                            self.oOutput.LineTimestamped('%s send %s reply' % (connectionID, longestmatch[2]))
                         if dMatchLongest.get(THP_ACTION, '') == THP_DISCONNECT:
                             self.oOutput.LineTimestamped('%s disconnecting' % connectionID)
                             break
@@ -350,8 +354,11 @@ class ConnectionThread(threading.Thread):
         except Exception as e:
             self.oOutput.LineTimestamped('%s %s' % (connectionID, str(e)))
 
-def TCPHoneypot(options):
+def TCPHoneypot(filenames, options):
     global dListeners
+
+    for filename in filenames:
+        execfile(filename, globals())
 
     oOutput = cOutput('tcp-honeypot-%s.log' % FormatTime(), True)
     if ModuleLoaded('paramiko'):
@@ -433,11 +440,7 @@ https://DidierStevens.com'''
         PrintManual()
         return
 
-    if len(args) != 0:
-        print('Error: no arguments expected')
-        return
-
-    TCPHoneypot(options)
+    TCPHoneypot(args, options)
 
 if __name__ == '__main__':
     Main()
