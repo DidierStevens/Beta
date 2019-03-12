@@ -2,8 +2,8 @@
 
 __description__ = 'TCP honeypot'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.3'
-__date__ = '2018/09/09'
+__version__ = '0.0.4'
+__date__ = '2019/03/12'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -17,6 +17,8 @@ History:
   2018/03/22: 0.0.2 added ssh
   2018/08/26: 0.0.3 added randomness when selecting a matching regular expression
   2018/09/09: added support for listeners via arguments
+  2018/12/23: 0.0.4 added THP_SPLIT
+  2019/03/12: added error handling
 
 Todo:
 """
@@ -34,6 +36,7 @@ THP_LOOP = 'loop'
 THP_REGEX = 'regex'
 THP_ACTION = 'action'
 THP_DISCONNECT = 'disconnect'
+THP_SPLIT = 'split'
 
 #Terminate With CR LF
 def TW_CRLF(data):
@@ -97,6 +100,8 @@ import ssl
 import textwrap
 import sys
 import random
+import traceback
+import binascii
 try:
     import paramiko
 except:
@@ -189,6 +194,17 @@ class cOutput():
     def LineTimestamped(self, line):
         self.Line('%s: %s' % (FormatTime(), line))
 
+    def Exception(self):
+        self.LineTimestamped('Exception occured:')
+        if not self.f or self.bothoutputs:
+            traceback.print_exc()
+        if self.f:
+            try:
+                traceback.print_exc(file=self.f)
+                self.f.flush()
+            except:
+                pass
+
     def Close(self):
         if self.f:
             self.f.close()
@@ -252,6 +268,12 @@ if ModuleLoaded('paramiko'):
 
         def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight, modes):
             return True
+
+def SplitIfRequested(dListener, data):
+    if THP_SPLIT in dListener:
+        return [part for part in data.split(dListener[THP_SPLIT]) if part != '']
+    else:
+        return [data]
 
 class ConnectionThread(threading.Thread):
     global dListeners
@@ -322,26 +344,29 @@ class ConnectionThread(threading.Thread):
                 else:
                     data = oSSHFile.readline()
                 self.oOutput.LineTimestamped('%s data %s' % (connectionID, repr(data)))
-                if THP_REPLY in dListener:
-                    connection.send(ReplaceAliases(dListener[THP_REPLY]))
-                    self.oOutput.LineTimestamped('%s send reply' % connectionID)
-                if THP_MATCH in dListener:
-                    matches = []
-                    for matchname, dMatch in dListener[THP_MATCH].items():
-                        oMatch = re.search(dMatch[THP_REGEX], data)
-                        if oMatch != None:
-                            matches.append([len(oMatch.group()), dMatch, matchname])
-                    if matches != []:
-                        matches = sorted(matches, reverse=True)
-                        longestmatches = [match for match in matches if match[0] == matches[0][0]]
-                        longestmatch = random.choice(longestmatches)
-                        dMatchLongest = longestmatch[1]
-                        if THP_REPLY in dMatchLongest:
-                            connection.send(ReplaceAliases(dMatchLongest[THP_REPLY]))
-                            self.oOutput.LineTimestamped('%s send %s reply' % (connectionID, longestmatch[2]))
-                        if dMatchLongest.get(THP_ACTION, '') == THP_DISCONNECT:
-                            self.oOutput.LineTimestamped('%s disconnecting' % connectionID)
-                            break
+                for splitdata in SplitIfRequested(dListener, data):
+                    if splitdata != data:
+                        self.oOutput.LineTimestamped('%s splitdata %s' % (connectionID, repr(splitdata)))
+                    if THP_REPLY in dListener:
+                        connection.send(ReplaceAliases(dListener[THP_REPLY]))
+                        self.oOutput.LineTimestamped('%s send reply' % connectionID)
+                    if THP_MATCH in dListener:
+                        matches = []
+                        for matchname, dMatch in dListener[THP_MATCH].items():
+                            oMatch = re.search(dMatch[THP_REGEX], splitdata)
+                            if oMatch != None:
+                                matches.append([len(oMatch.group()), dMatch, matchname])
+                        if matches != []:
+                            matches = sorted(matches, reverse=True)
+                            longestmatches = [match for match in matches if match[0] == matches[0][0]]
+                            longestmatch = random.choice(longestmatches)
+                            dMatchLongest = longestmatch[1]
+                            if THP_REPLY in dMatchLongest:
+                                connection.send(ReplaceAliases(dMatchLongest[THP_REPLY]))
+                                self.oOutput.LineTimestamped('%s send %s reply' % (connectionID, longestmatch[2]))
+                            if dMatchLongest.get(THP_ACTION, '') == THP_DISCONNECT:
+                                self.oOutput.LineTimestamped('%s disconnecting' % connectionID)
+                                break
             #a# is it necessary to close both oSSLConnection and oSocketConnection?
             if oSSLConnection != None:
                 oSSLConnection.shutdown(socket.SHUT_RDWR)
@@ -417,7 +442,10 @@ def TCPHoneypot(filenames, options):
     while True:
         readables, writables, exceptionals = select.select(sockets, [], [])
         for oSocket in readables:
-            ConnectionThread(oSocket, oOutput, options).start()
+            try:
+                ConnectionThread(oSocket, oOutput, options).start()
+            except:
+                oOutput.Exception()
 
 def Main():
     moredesc = '''
