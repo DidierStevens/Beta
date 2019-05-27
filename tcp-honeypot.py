@@ -3,7 +3,7 @@
 __description__ = 'TCP honeypot'
 __author__ = 'Didier Stevens'
 __version__ = '0.0.4'
-__date__ = '2019/03/12'
+__date__ = '2019/04/10'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -19,6 +19,7 @@ History:
   2018/09/09: added support for listeners via arguments
   2018/12/23: 0.0.4 added THP_SPLIT
   2019/03/12: added error handling
+  2019/04/10: THP_STARTSWITH and THP_ELSE
 
 Todo:
 """
@@ -34,6 +35,8 @@ THP_REPLY = 'reply'
 THP_MATCH = 'match'
 THP_LOOP = 'loop'
 THP_REGEX = 'regex'
+THP_STARTSWITH = 'startswith'
+THP_ELSE = 'else'
 THP_ACTION = 'action'
 THP_DISCONNECT = 'disconnect'
 THP_SPLIT = 'split'
@@ -283,12 +286,14 @@ class ConnectionThread(threading.Thread):
         self.oSocket = oSocket
         self.oOutput = oOutput
         self.options = options
+        self.connection = None
+        self.connectionID = None
 
     def run(self):
         oSocketConnection, address = self.oSocket.accept()
-        connectionID = '%s:%d-%s:%d' % (self.oSocket.getsockname() + address)
+        self.connectionID = '%s:%d-%s:%d' % (self.oSocket.getsockname() + address)
         oSocketConnection.settimeout(self.options.timeout)
-        self.oOutput.LineTimestamped('%s connection' % connectionID)
+        self.oOutput.LineTimestamped('%s connection' % self.connectionID)
         dListener = dListeners[self.oSocket.getsockname()[1]]
         if THP_REFERENCE in dListener:
             dListener = dListeners[dListener[THP_REFERENCE]]
@@ -299,73 +304,79 @@ class ConnectionThread(threading.Thread):
             oSSHFile = None
             if oSSLContext != None:
                 oSSLConnection = oSSLContext.wrap_socket(oSocketConnection, server_side=True)
-                connection = oSSLConnection
+                self.connection = oSSLConnection
             elif dListener.get(THP_SSH, None) != None:
                 if ModuleLoaded('paramiko'):
                     if THP_KEYFILE in dListener[THP_SSH]:
                         oRSAKey = paramiko.RSAKey(filename=dListener[THP_SSH][THP_KEYFILE])
                     else:
                         oRSAKey = paramiko.RSAKey.generate(1024)
-                        self.oOutput.LineTimestamped('%s SSH generated RSA key' % connectionID)
+                        self.oOutput.LineTimestamped('%s SSH generated RSA key' % self.connectionID)
                     oTransport = paramiko.Transport(oSocketConnection)
                     if THP_BANNER in dListener[THP_SSH]:
                         oTransport.local_version = dListener[THP_SSH][THP_BANNER]
                     oTransport.load_server_moduli()
                     oTransport.add_server_key(oRSAKey)
-                    oSSHServer = cSSHServer(self.oOutput, connectionID)
+                    oSSHServer = cSSHServer(self.oOutput, self.connectionID)
                     try:
                         oTransport.start_server(server=oSSHServer)
                     except paramiko.SSHException:
-                        self.oOutput.LineTimestamped('%s SSH negotiation failed' % connectionID)
+                        self.oOutput.LineTimestamped('%s SSH negotiation failed' % self.connectionID)
                         raise
-                    self.oOutput.LineTimestamped('%s SSH banner %s' % (connectionID, oTransport.remote_version))
+                    self.oOutput.LineTimestamped('%s SSH banner %s' % (self.connectionID, oTransport.remote_version))
                     oSSHConnection = oTransport.accept(20)
                     if oSSHConnection is None:
-                        self.oOutput.LineTimestamped('%s SSH no channel' % connectionID)
+                        self.oOutput.LineTimestamped('%s SSH no channel' % self.connectionID)
                         raise
-                    self.oOutput.LineTimestamped('%s SSH authenticated' % connectionID)
+                    self.oOutput.LineTimestamped('%s SSH authenticated' % self.connectionID)
                     oSSHServer.oEvent.wait(10)
                     if not oSSHServer.oEvent.is_set():
-                        self.oOutput.LineTimestamped('%s SSH no shell' % connectionID)
+                        self.oOutput.LineTimestamped('%s SSH no shell' % self.connectionID)
                         raise
-                    connection = oSSHConnection
+                    self.connection = oSSHConnection
                     oSSHFile = oSSHConnection.makefile('rU')
                 else:
-                    self.oOutput.LineTimestamped('%s can not create SSH server, Python module paramiko missing' % connectionID)
-                    connection = oSocketConnection
+                    self.oOutput.LineTimestamped('%s can not create SSH server, Python module paramiko missing' % self.connectionID)
+                    self.connection = oSocketConnection
             else:
-                connection = oSocketConnection
+                self.connection = oSocketConnection
             if THP_BANNER in dListener:
-                connection.send(ReplaceAliases(dListener[THP_BANNER]))
-                self.oOutput.LineTimestamped('%s send banner' % connectionID)
+                self.connection.send(ReplaceAliases(dListener[THP_BANNER]))
+                self.oOutput.LineTimestamped('%s send banner' % self.connectionID)
             for i in range(0, dListener.get(THP_LOOP, 1)):
                 if oSSHFile == None:
-                    data = connection.recv(self.options.readbuffer)
+                    data = self.connection.recv(self.options.readbuffer)
                 else:
                     data = oSSHFile.readline()
-                self.oOutput.LineTimestamped('%s data %s' % (connectionID, repr(data)))
+                self.oOutput.LineTimestamped('%s data %s' % (self.connectionID, repr(data)))
                 for splitdata in SplitIfRequested(dListener, data):
                     if splitdata != data:
-                        self.oOutput.LineTimestamped('%s splitdata %s' % (connectionID, repr(splitdata)))
+                        self.oOutput.LineTimestamped('%s splitdata %s' % (self.connectionID, repr(splitdata)))
                     if THP_REPLY in dListener:
-                        connection.send(ReplaceAliases(dListener[THP_REPLY]))
-                        self.oOutput.LineTimestamped('%s send reply' % connectionID)
+                        self.connection.send(ReplaceAliases(dListener[THP_REPLY]))
+                        self.oOutput.LineTimestamped('%s send reply' % self.connectionID)
                     if THP_MATCH in dListener:
-                        matches = []
-                        for matchname, dMatch in dListener[THP_MATCH].items():
-                            oMatch = re.search(dMatch[THP_REGEX], splitdata)
-                            if oMatch != None:
-                                matches.append([len(oMatch.group()), dMatch, matchname])
-                        if matches != []:
-                            matches = sorted(matches, reverse=True)
-                            longestmatches = [match for match in matches if match[0] == matches[0][0]]
-                            longestmatch = random.choice(longestmatches)
-                            dMatchLongest = longestmatch[1]
-                            if THP_REPLY in dMatchLongest:
-                                connection.send(ReplaceAliases(dMatchLongest[THP_REPLY]))
-                                self.oOutput.LineTimestamped('%s send %s reply' % (connectionID, longestmatch[2]))
-                            if dMatchLongest.get(THP_ACTION, '') == THP_DISCONNECT:
-                                self.oOutput.LineTimestamped('%s disconnecting' % connectionID)
+                        dKeys = {}
+                        for item in dListener[THP_MATCH].items():
+                            for key in item[1].keys():
+                                dKeys[key] = 1 + dKeys.get(key, 0)
+                        if THP_REGEX in dKeys and THP_STARTSWITH in dKeys:
+                            self.oOutput.LineTimestamped('THP_MATCH cannot contain both THP_REGEX and THP_STARTSWITH!')
+                        elif THP_REGEX in dKeys:
+                            matches = []
+                            for matchname, dMatch in dListener[THP_MATCH].items():
+                                if THP_REGEX in dMatch:
+                                    oMatch = re.search(dMatch[THP_REGEX], splitdata)
+                                    if oMatch != None:
+                                        matches.append([len(oMatch.group()), dMatch, matchname])
+                            if self.ProcessMatches(matches, dListener):
+                                break
+                        elif THP_STARTSWITH in dKeys:
+                            matches = []
+                            for matchname, dMatch in dListener[THP_MATCH].items():
+                                if THP_STARTSWITH in dMatch and splitdata.startswith(dMatch[THP_STARTSWITH]):
+                                    matches.append([len(dMatch[THP_STARTSWITH]), dMatch, matchname])
+                            if self.ProcessMatches(matches, dListener):
                                 break
             #a# is it necessary to close both oSSLConnection and oSocketConnection?
             if oSSLConnection != None:
@@ -373,19 +384,40 @@ class ConnectionThread(threading.Thread):
                 oSSLConnection.close()
             oSocketConnection.shutdown(socket.SHUT_RDWR)
             oSocketConnection.close()
-            self.oOutput.LineTimestamped('%s closed' % connectionID)
+            self.oOutput.LineTimestamped('%s closed' % self.connectionID)
         except socket.timeout:
-            self.oOutput.LineTimestamped('%s timeout' % connectionID)
+            self.oOutput.LineTimestamped('%s timeout' % self.connectionID)
         except Exception as e:
-            self.oOutput.LineTimestamped('%s %s' % (connectionID, str(e)))
+            self.oOutput.LineTimestamped("%s exception '%s'" % (self.connectionID, str(e)))
+
+    def ProcessMatches(self, matches, dListener):
+        result = False
+        if matches == []:
+            for matchname, dMatch in dListener[THP_MATCH].items():
+                if THP_ELSE in dMatch:
+                    matches.append([0, dMatch, THP_ELSE])
+        if matches != []:
+            matches = sorted(matches, reverse=True)
+            longestmatches = [match for match in matches if match[0] == matches[0][0]]
+            longestmatch = random.choice(longestmatches)
+            dMatchLongest = longestmatch[1]
+            if THP_REPLY in dMatchLongest:
+                self.connection.send(ReplaceAliases(dMatchLongest[THP_REPLY]))
+                self.oOutput.LineTimestamped('%s send %s reply' % (self.connectionID, longestmatch[2]))
+            if dMatchLongest.get(THP_ACTION, '') == THP_DISCONNECT:
+                self.oOutput.LineTimestamped('%s disconnecting' % self.connectionID)
+                result = True
+        return result
 
 def TCPHoneypot(filenames, options):
     global dListeners
 
+    oOutput = cOutput('tcp-honeypot-%s.log' % FormatTime(), True)
+
     for filename in filenames:
+        oOutput.LineTimestamped('Exec: %s' % filename)
         execfile(filename, globals())
 
-    oOutput = cOutput('tcp-honeypot-%s.log' % FormatTime(), True)
     if ModuleLoaded('paramiko'):
         paramiko.util.log_to_file('tcp-honeypot-ssh-%s.log' % FormatTime())
 
