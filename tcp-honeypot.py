@@ -2,8 +2,8 @@
 
 __description__ = 'TCP honeypot'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.4'
-__date__ = '2019/04/10'
+__version__ = '0.0.5'
+__date__ = '2019/05/30'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -20,6 +20,7 @@ History:
   2018/12/23: 0.0.4 added THP_SPLIT
   2019/03/12: added error handling
   2019/04/10: THP_STARTSWITH and THP_ELSE
+  2019/05/30: 0.0.5 added File2String
 
 Todo:
 """
@@ -105,6 +106,7 @@ import sys
 import random
 import traceback
 import binascii
+import struct
 try:
     import paramiko
 except:
@@ -169,6 +171,18 @@ def IFF(expression, valueTrue, valueFalse):
         return CIC(valueTrue)
     else:
         return CIC(valueFalse)
+
+def File2String(filename):
+    try:
+        f = open(filename, 'rb')
+    except:
+        return None
+    try:
+        return f.read()
+    except:
+        return None
+    finally:
+        f.close()
 
 def FormatTime(epoch=None):
     if epoch == None:
