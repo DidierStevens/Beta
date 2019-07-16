@@ -2,8 +2,8 @@
 
 __description__ = 'TCP honeypot'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.5'
-__date__ = '2019/05/30'
+__version__ = '0.0.6'
+__date__ = '2019/07/11'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -21,6 +21,7 @@ History:
   2019/03/12: added error handling
   2019/04/10: THP_STARTSWITH and THP_ELSE
   2019/05/30: 0.0.5 added File2String
+  2019/07/11: 0.0.6 added error handling for oSocket.listen(5)
 
 Todo:
 """
@@ -478,7 +479,20 @@ def TCPHoneypot(filenames, options):
                 continue
             else:
                 raise e
-        oSocket.listen(5)
+        try:
+            oSocket.listen(5)
+        except socket.error as e:
+            if '[Errno 98] Address already in use' in str(e):
+                oOutput.LineTimestamped('Port %d can not be used, it is already open' % port)
+                continue
+            elif '[Errno 99] Cannot assign requested address' in str(e) or '[Errno 10049] The requested address is not valid in its context' in str(e):
+                oOutput.LineTimestamped('Address %s can not be used (port %d)' % (options.address, port))
+                continue
+            elif '[Errno 10013] An attempt was made to access a socket in a way forbidden by its access permissions' in str(e):
+                oOutput.LineTimestamped('Port %d can not be used, access is forbidden' % port)
+                continue
+            else:
+                raise e
         oOutput.LineTimestamped('Listening on %s %d' % oSocket.getsockname())
         sockets.append(oSocket)
 
