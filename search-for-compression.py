@@ -2,10 +2,10 @@
 
 from __future__ import print_function
 
-__description__ = 'Template binary file argument'
+__description__ = 'Tool to search for compressed data'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.2'
-__date__ = '2019/08/05'
+__version__ = '0.0.1'
+__date__ = '2019/08/18'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -13,31 +13,9 @@ https://DidierStevens.com
 Use at your own risk
 
 History:
-  2016/12/03: start
-  2017/06/16: refactoring to cBinaryFile
-  2017/07/11: added CutData
-  2017/09/09: added second, optional argument to chr; cDump; refactoring; Python3
-  2017/09/10: CalculateByteStatistics; refactoring
-  2017/11/01: updated cDump
-  2017/11/04: DataIO
-  2017/11/17: cBinaryFile.read
-  2017/12/01: updated FilenameCheckHash to handle empty file: #
-  2017/12/02: Changed #e#chr; added man
-  2018/03/05: added option -r; added support for strings and hexadecimal strings without function to #e#
-  2018/06/12: updated man page
-  2018/06/17: added property extracted to cBinaryFile
-  2018/07/01: updated man with --jsoninput option
-  2018/07/07: Updated CheckJSON to version 2
-  2018/07/10: updated man
-  2018/10/03: updated man
-  2018/10/08: added %ru% to cOutput
-  2018/10/20: added eol to cOutput.Line
-  2018/12/01: 0.0.2 updated ParseCutTerm, cDump & Quote
-  2019/04/14: Updated cOutput #h# #t# cDump.Base64Dump; added flag arguments support #f#; Quote bugfix
-  2019/04/18: added optparse for flag arguments #f#
-  2019/04/27: updated CutData UNICODE & Find
-  2019/08/05: bugfix #e#chr
   2019/08/10: start
+  2019/08/16: continue
+  2019/08/18: added options -s, -x, -a, ...
 
 Todo:
   Document flag arguments in man page
@@ -61,6 +39,7 @@ import fnmatch
 import json
 import time
 import zlib
+import hashlib
 if sys.version_info[0] >= 3:
     from io import BytesIO as DataIO
 else:
@@ -282,6 +261,8 @@ Most options can be combined, like #ps# for example.
 
 DEFAULT_SEPARATOR = ','
 QUOTE = '"'
+dumplinelength = 16
+REGEX_STANDARD = '[\x09\x20-\x7E]'
 
 def PrintError(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -1334,6 +1315,18 @@ class cLogfile():
             self.Line('Finish', '%d error(s)' % self.errors, '%d second(s)' % (time.time() - self.starttime))
             self.oOutput.Close()
 
+def Magic(data):
+    magicPrintable = ''
+    magicHex = ''
+    for iter in range(4):
+        if len(data) >= iter + 1:
+            if ord(data[iter]) >= 0x20 and ord(data[iter]) < 0x7F:
+                magicPrintable += data[iter]
+            else:
+                magicPrintable += '.'
+            magicHex += '%02x' % ord(data[iter])
+    return magicPrintable, magicHex
+
 def CalculateByteStatistics(dPrevalence=None, data=None):
     averageConsecutiveByteDifference = None
     if dPrevalence == None:
@@ -1393,10 +1386,63 @@ def InstantiateCOutput(options):
         filenameOption = options.output
     return cOutput(filenameOption)
 
+def Info(data):
+    result = []
+    sumValues, entropy, countUniqueBytes, countNullByte, countControlBytes, countWhitespaceBytes, countPrintableBytes, countHighBytes, countHexadecimalBytes, countBASE64Bytes, averageConsecutiveByteDifference = CalculateByteStatistics(data=data)
+    magicPrintable, magicHex = Magic(data)
+    result.append('Info:\n')
+    result.append(' %s: %s\n' % ('MD5', hashlib.md5(data).hexdigest()))
+    result.append(' %s: %s\n' % ('SHA1', hashlib.sha1(data).hexdigest()))
+    result.append(' %s: %s\n' % ('SHA256', hashlib.sha256(data).hexdigest()))
+    result.append(' %s: %s\n' % ('Magic HEX', magicHex))
+    result.append(' %s: %s\n' % ('Magic ASCII', magicPrintable))
+    result.append(' %s: %d\n' % ('Size', len(data)))
+    result.append(' %s: %f\n' % ('Entropy', entropy))
+    result.append(' %s: %d (%.2f%%)\n' % ('Unique bytes', countUniqueBytes, countUniqueBytes / 2.560))
+    result.append(' %s: %s\n' % ('Null bytes', countNullByte))
+    result.append(' %s: %s\n' % ('Control bytes', countControlBytes))
+    result.append(' %s: %s\n' % ('Whitespace bytes', countWhitespaceBytes))
+    result.append(' %s: %s\n' % ('Printable bytes', countPrintableBytes))
+    result.append(' %s: %s\n' % ('High bytes', countHighBytes))
+    return ''.join(result)
+
+def HexDump(data):
+    return cDump(data, dumplinelength=dumplinelength).HexDump()
+
+def Translate(expression):
+    try:
+        codecs.lookup(expression)
+        command = '.decode("%s")' % expression
+    except LookupError:
+        command = expression
+    return lambda x: eval('x' + command)
+
+def ExtractStringsASCII(data):
+    regex = REGEX_STANDARD + '{%d,}'
+    return re.findall(regex % 4, data)
+
+def ExtractStringsUNICODE(data):
+    regex = '((' + REGEX_STANDARD + '\x00){%d,})'
+    return [foundunicodestring.replace('\x00', '') for foundunicodestring, dummy in re.findall(regex % 4, data)]
+
+def ExtractStrings(data):
+    return ExtractStringsASCII(data) + ExtractStringsUNICODE(data)
+
+def DumpFunctionStrings(data):
+    return ''.join([extractedstring + '\n' for extractedstring in ExtractStrings(data)])
+
+def HexAsciiDump(data, rle=False):
+    return cDump(data, dumplinelength=dumplinelength).HexAsciiDump(rle=rle)
+
 def ZlibRawDecompress(data):
     try:
         result = zlib.decompress(data, -8, 1000000)
-        for iIter in range(len(data)):
+        recompressLengthStart = len(zlib.compress(result))
+        if recompressLengthStart <= 1000:
+            recompressLengthStart = 0
+        else:
+            recompressLengthStart = int(recompressLengthStart * 0.95)
+        for iIter in range(recompressLengthStart, len(data)):
             try:
                 result2 = zlib.decompress(data[:iIter], -8, 1000000)
                 if result == result2:
@@ -1429,21 +1475,38 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
 
 #    import lzma
 
+    if options.dump:
+        DumpFunction = lambda x:x
+        IfWIN32SetBinary(sys.stdout)
+    elif options.hexdump:
+        DumpFunction = HexDump
+    elif options.info:
+        DumpFunction = Info
+    elif options.translate != '':
+        DumpFunction = Translate(options.translate)
+    elif options.strings:
+        DumpFunction = DumpFunctionStrings
+    elif options.asciidumprle:
+        DumpFunction = lambda x: HexAsciiDump(x, True)
+    else:
+        DumpFunction = HexAsciiDump
     try:
         # ----- Put your data processing code here -----
         buffer = data
-        if options.dump:
-            IfWIN32SetBinary(sys.stdout)
-
+        counter = 0
         while len(buffer) > 0:
             decompressed, lenCompressed, remainder = ZlibRawDecompress(buffer)
             if decompressed == None or len(decompressed) < options.minsize:
                 buffer = buffer[1:]
             else:
-                if options.dump:
-                    StdoutWriteChunked(decompressed)
-                else:
-                    oOutput.Line('%08x %d %d %d' % (len(data) - len(buffer), lenCompressed, len(decompressed), len(remainder)))
+                counter += 1
+                if options.select == '':
+                    oOutput.Line('%d: 0x%08x %d %d %d' % (counter, len(data) - len(buffer), lenCompressed, len(decompressed), len(remainder)))
+                elif options.select == 'a' or int(options.select) == counter:
+                    if options.dump:
+                        StdoutWriteChunked(DumpFunction(decompressed))
+                    else:
+                        oOutput.Line(DumpFunction(decompressed), eol='')
                 buffer = remainder
         # ----------------------------------------------
     except:
@@ -1483,8 +1546,15 @@ https://DidierStevens.com'''
     oParser = optparse.OptionParser(usage='usage: %prog [options] [[@]file|cut-expression|flag-expression ...]\n' + __description__ + moredesc, version='%prog ' + __version__, epilog='This tool also accepts flag arguments (#f#), read the man page (-m) for more info.')
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
     oParser.add_option('-o', '--output', type=str, default='', help='Output to file (# supported)')
-    oParser.add_option('-d', '--dump', action='store_true', default=False, help='Binary dump')
     oParser.add_option('-n', '--minsize', type=int, default=0, help='Minimum size of decompressed data (default 0)')
+    oParser.add_option('-s', '--select', default='', help='select item nr for dumping (a for all)')
+    oParser.add_option('-d', '--dump', action='store_true', default=False, help='perform dump')
+    oParser.add_option('-x', '--hexdump', action='store_true', default=False, help='perform hex dump')
+    oParser.add_option('-a', '--asciidump', action='store_true', default=False, help='perform ascii dump')
+    oParser.add_option('-A', '--asciidumprle', action='store_true', default=False, help='perform ascii dump with RLE')
+    oParser.add_option('-S', '--strings', action='store_true', default=False, help='perform strings dump')
+    oParser.add_option('-i', '--info', action='store_true', default=False, help='print extra info for selected item')
+    oParser.add_option('-t', '--translate', type=str, default='', help='string translation, like utf16 or .decode("utf8")')
     oParser.add_option('-p', '--password', default='infected', help='The ZIP password to be used (default infected)')
     oParser.add_option('--noextraction', action='store_true', default=False, help='Do not extract from archive file')
     oParser.add_option('-l', '--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')
