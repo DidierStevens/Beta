@@ -2,8 +2,8 @@
 
 __description__ = 'TCP honeypot'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.6'
-__date__ = '2019/07/11'
+__version__ = '0.0.7'
+__date__ = '2019/11/09'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -22,8 +22,13 @@ History:
   2019/04/10: THP_STARTSWITH and THP_ELSE
   2019/05/30: 0.0.5 added File2String
   2019/07/11: 0.0.6 added error handling for oSocket.listen(5)
+  2019/11/06: 0.0.7 added THP_ECHO
+  2019/11/07: added option -f
+  2019/11/09: updated man with TCP_ECHO details
 
 Todo:
+  Update manual with all listener configuration options
+  Add support for PyDivert
 """
 
 THP_REFERENCE = 'reference'
@@ -42,6 +47,9 @@ THP_ELSE = 'else'
 THP_ACTION = 'action'
 THP_DISCONNECT = 'disconnect'
 THP_SPLIT = 'split'
+THP_ECHO = 'echo'
+
+dumplinelength = 16
 
 #Terminate With CR LF
 def TW_CRLF(data):
@@ -108,6 +116,11 @@ import random
 import traceback
 import binascii
 import struct
+import inspect
+if sys.version_info[0] >= 3:
+    from io import StringIO
+else:
+    from cStringIO import StringIO
 try:
     import paramiko
 except:
@@ -127,6 +140,40 @@ To increase the interactivity of the honeypot, keywords can be defined with repl
 Entries in this match dictionary are regular expressions (THP_REGEX): when a regular expression matches read data, the corresponding reply is send or action performed (e.g. disconnect).
 If more than one regular expression matches, then the longest matching is selected. If there is more than one longest match (e.g. equal length), then one is selected at random.
 
+TCP_ECHO can be used to send back any incoming data (echo). Like this:
+
+dListeners = {
+    4444:   {THP_LOOP: 10,
+             THP_ECHO: None,
+            },
+}
+
+TCP_ECHO also takes a function, which's goal is to transform the incoming data and return it. Here is an example with a lambda function that converts all lowercase letters to uppercase:
+
+dListeners = {
+    4444:   {THP_LOOP: 10,
+             THP_ECHO: lambda x: x.upper(),
+            },
+}
+
+If persistence is required across function calls, a custom class can also be provide. This class has to implement a method with name Process (input: incoming data, output: transformed data).
+
+For example:
+
+class MyEcho():
+    def __init__(self):
+        self.counter = 0
+        
+    def Process(self, data):
+        self.counter += 1
+        return 'Counter %d: %s\n' % (self.counter, repr(data))
+
+dListeners = {
+    4444:   {THP_LOOP: 10,
+             THP_ECHO: MyEcho,
+            },
+}
+
 A listener can be configured to accept SSL/TLS connections by adding key THP_SSL to the listener dictionary with a dictionary as value specifying the certificate (THP_CERTFILE) and key (THP_KEYFILE) to use. If an SSL context can not be created (for example because of missing certificate file), the listener will fallback to TCP.
 
 A listener can be configured to accept SSH connections by adding key THP_SSH to the listener dictionary with a dictionary as value specifying the key (THP_KEYFILE) to use. This requires Python module paramiko, the listener will fallback to TCP if this module is missing.
@@ -140,7 +187,14 @@ Output is written to stdout and a log file.
 
 This tool has several command-line options, and can take listeners as arguments. These arguments are filenames of Python programs that define listeners.
 
-It is written for Python 2.7 and was tested on Windows 10, Ubuntu 16 and CentOS 6.
+Option -f (format) can be used to change the output format of data.
+Possible values are: repr, x, X, a, A, b, B
+The default value (repr) output's data on a single line using Python's repr function.
+a is an ASCII/HEX dump over several lines, A is an ASCII/HEX dump too, but with duplicate lines removed.
+x is an HEX dump over several lines, X is an HEX dump without whitespace.
+b is a BASE64 dump over several lines, B is a BASE64 without whitespace.
+
+It is written for Python 2 & 3 and was tested on Windows 10, Ubuntu 16 and CentOS 6.
 '''
     for line in manual.split('\n'):
         print(textwrap.fill(line, 79))
@@ -172,6 +226,102 @@ def IFF(expression, valueTrue, valueFalse):
         return CIC(valueTrue)
     else:
         return CIC(valueFalse)
+
+class cDump():
+    def __init__(self, data, prefix='', offset=0, dumplinelength=16):
+        self.data = data
+        self.prefix = prefix
+        self.offset = offset
+        self.dumplinelength = dumplinelength
+
+    def HexDump(self):
+        oDumpStream = self.cDumpStream(self.prefix)
+        hexDump = ''
+        for i, b in enumerate(self.data):
+            if i % self.dumplinelength == 0 and hexDump != '':
+                oDumpStream.Addline(hexDump)
+                hexDump = ''
+            hexDump += IFF(hexDump == '', '', ' ') + '%02X' % self.C2IIP2(b)
+        oDumpStream.Addline(hexDump)
+        return oDumpStream.Content()
+
+    def CombineHexAscii(self, hexDump, asciiDump):
+        if hexDump == '':
+            return ''
+        countSpaces = 3 * (self.dumplinelength - len(asciiDump))
+        if len(asciiDump) <= self.dumplinelength / 2:
+            countSpaces += 1
+        return hexDump + '  ' + (' ' * countSpaces) + asciiDump
+
+    def HexAsciiDump(self, rle=False):
+        oDumpStream = self.cDumpStream(self.prefix)
+        position = ''
+        hexDump = ''
+        asciiDump = ''
+        previousLine = None
+        countRLE = 0
+        for i, b in enumerate(self.data):
+            b = self.C2IIP2(b)
+            if i % self.dumplinelength == 0:
+                if hexDump != '':
+                    line = self.CombineHexAscii(hexDump, asciiDump)
+                    if not rle or line != previousLine:
+                        if countRLE > 0:
+                            oDumpStream.Addline('* %d 0x%02x' % (countRLE, countRLE * self.dumplinelength))
+                        oDumpStream.Addline(position + line)
+                        countRLE = 0
+                    else:
+                        countRLE += 1
+                    previousLine = line
+                position = '%08X:' % (i + self.offset)
+                hexDump = ''
+                asciiDump = ''
+            if i % self.dumplinelength == self.dumplinelength / 2:
+                hexDump += ' '
+            hexDump += ' %02X' % b
+            asciiDump += IFF(b >= 32 and b < 128, chr(b), '.')
+        if countRLE > 0:
+            oDumpStream.Addline('* %d 0x%02x' % (countRLE, countRLE * self.dumplinelength))
+        oDumpStream.Addline(self.CombineHexAscii(position + hexDump, asciiDump))
+        return oDumpStream.Content()
+
+    def Base64Dump(self, nowhitespace=False):
+        encoded = binascii.b2a_base64(self.data)
+        if nowhitespace:
+            return encoded
+        oDumpStream = self.cDumpStream(self.prefix)
+        length = 64
+        for i in range(0, len(encoded), length):
+            oDumpStream.Addline(encoded[0+i:length+i])
+        return oDumpStream.Content()
+
+    class cDumpStream():
+        def __init__(self, prefix=''):
+            self.oStringIO = StringIO()
+            self.prefix = prefix
+
+        def Addline(self, line):
+            if line != '':
+                self.oStringIO.write(self.prefix + line + '\n')
+
+        def Content(self):
+            return self.oStringIO.getvalue()
+
+    @staticmethod
+    def C2IIP2(data):
+        if sys.version_info[0] > 2:
+            return data
+        else:
+            return ord(data)
+
+def HexDump(data):
+    return cDump(data, dumplinelength=dumplinelength).HexDump()
+
+def HexAsciiDump(data, rle=False):
+    return cDump(data, dumplinelength=dumplinelength).HexAsciiDump(rle=rle)
+
+def Base64Dump(data, nowhitespace=False):
+    return cDump(data, dumplinelength=dumplinelength).Base64Dump(nowhitespace=nowhitespace)
 
 def File2String(filename):
     try:
@@ -355,6 +505,10 @@ class ConnectionThread(threading.Thread):
                     self.connection = oSocketConnection
             else:
                 self.connection = oSocketConnection
+            if THP_ECHO in dListener and inspect.isclass(dListener[THP_ECHO]):
+                echoObject = dListener[THP_ECHO]()
+            else:
+                echoObject = None
             if THP_BANNER in dListener:
                 self.connection.send(ReplaceAliases(dListener[THP_BANNER]))
                 self.oOutput.LineTimestamped('%s send banner' % self.connectionID)
@@ -363,10 +517,19 @@ class ConnectionThread(threading.Thread):
                     data = self.connection.recv(self.options.readbuffer)
                 else:
                     data = oSSHFile.readline()
-                self.oOutput.LineTimestamped('%s data %s' % (self.connectionID, repr(data)))
+                self.LogData('data', data)
                 for splitdata in SplitIfRequested(dListener, data):
                     if splitdata != data:
-                        self.oOutput.LineTimestamped('%s splitdata %s' % (self.connectionID, repr(splitdata)))
+                        self.LogData('splitdata', splitdata)
+                    if THP_ECHO in dListener:
+                        if echoObject != None:
+                            echodata = echoObject.Process(splitdata)
+                        elif callable(dListener[THP_ECHO]):
+                            echodata = dListener[THP_ECHO](splitdata)
+                        else:
+                            echodata = splitdata
+                        self.connection.send(echodata)
+                        self.LogData('send echo', echodata)
                     if THP_REPLY in dListener:
                         self.connection.send(ReplaceAliases(dListener[THP_REPLY]))
                         self.oOutput.LineTimestamped('%s send reply' % self.connectionID)
@@ -423,6 +586,24 @@ class ConnectionThread(threading.Thread):
                 self.oOutput.LineTimestamped('%s disconnecting' % self.connectionID)
                 result = True
         return result
+
+    def LogData(self, name, data):
+        if self.options.format == 'repr':
+            self.oOutput.LineTimestamped('%s %s %s' % (self.connectionID, name, repr(data)))
+        else:
+            self.oOutput.LineTimestamped('%s %s' % (self.connectionID, name))
+            if self.options.format == 'a':
+                self.oOutput.Line(HexAsciiDump(data))
+            elif self.options.format == 'A':
+                self.oOutput.Line(HexAsciiDump(data, True))
+            elif self.options.format == 'x':
+                self.oOutput.Line(HexDump(data))
+            elif self.options.format == 'X':
+                self.oOutput.Line(binascii.b2a_hex(data))
+            elif self.options.format == 'b':
+                self.oOutput.Line(Base64Dump(data))
+            elif self.options.format == 'B':
+                self.oOutput.Line(Base64Dump(data, True))
 
 def TCPHoneypot(filenames, options):
     global dListeners
@@ -521,6 +702,7 @@ https://DidierStevens.com'''
     oParser.add_option('-a', '--address', default='0.0.0.0', help='Address to listen on (default 0.0.0.0)')
     oParser.add_option('-P', '--ports', default='', help='Ports to listen on (overrides ports configured in the program)')
     oParser.add_option('-p', '--extraports', default='', help='Extra ports to listen on (default none)')
+    oParser.add_option('-f', '--format', default='repr', help='Output format (default repr)')
     (options, args) = oParser.parse_args()
 
     if options.man:
