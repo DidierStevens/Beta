@@ -2,8 +2,8 @@
 
 __description__ = "Tool for Metasploit"
 __author__ = 'Didier Stevens'
-__version__ = '0.0.1'
-__date__ = '2017/08/17'
+__version__ = '0.0.2'
+__date__ = '2021/03/11'
 
 """
 
@@ -13,6 +13,7 @@ Use at your own risk
 
 History:
   2017/08/17: start
+  2021/03/11: 0.0.2 added command url8, Python 3 fix
 
 Todo:
 """
@@ -33,6 +34,8 @@ import time
 def PrintManual():
     manual = '''
 Manual:
+
+This version of the tool recognizes and decodes 2 types of Metasploit URLs.
 
 In this version the only supported command is urluuid.
 
@@ -107,6 +110,11 @@ dPlatforms = {
     22: 'nodejs',
     23: 'firefox'
   }
+
+commands = ['urluuid', 'url8']
+
+UNDEFINED = 'undefined'
+
 def File2Strings(filename):
     try:
         if filename == '':
@@ -196,6 +204,21 @@ def ProcessFile(fIn, fullread):
         for line in fIn:
             yield line.strip('\n\r')
 
+def Checksum8(data):
+    return sum(map(ord, data))
+
+def Checksum8LSB(data):
+    dMetasploitConstants = {
+        92: 'URI_CHECKSUM_INITW',
+        80: 'URI_CHECKSUM_INITP',
+        88: 'URI_CHECKSUM_INITJ',
+        98: 'URI_CHECKSUM_CONN',
+        95: 'URI_CHECKSUM_INIT_CONN',
+    }
+
+    value = Checksum8(data) % 0x100
+    return (value, dMetasploitConstants.get(value, ''))
+
 def MetatoolSingle(command, filename, oOutput, options):
     if filename == '':
         fIn = sys.stdin
@@ -203,31 +226,53 @@ def MetatoolSingle(command, filename, oOutput, options):
         fIn = gzip.GzipFile(filename, 'rb')
     else:
         fIn = open(filename, 'r')
-    oRE = re.compile('(?:https?://[^/]+)?/([^/]+)/?')
+    oREurluuid = re.compile('(?:https?://[^/]+)?/([^/]+)/?')
+    oREurl8 = re.compile(r'https?://[^/]+/(.{4})\b')
+    format = '8sBBBBBBBB'
     for line in ProcessFile(fIn, False):
-        oSearch = oRE.search(line)
-        if oSearch != None:
-            if len(oSearch.groups()[0]) >= 22:
-                try:
-                    decoded = base64.urlsafe_b64decode(oSearch.groups()[0][0:22] + '==')
-                except:
-                    continue
-                puid, xor1, xor2, platform_xored, architecture_xored, ts1_xored, ts2_xored, ts3_xored, ts4_xored = struct.unpack('8sBBBBBBBB', decoded)
-                platform = platform_xored ^ xor1
-                architecture = architecture_xored ^ xor2
-                timestamp = struct.unpack('>I', chr(ts1_xored ^ xor1) + chr(ts2_xored ^ xor2) + chr(ts3_xored ^ xor1) + chr(ts4_xored ^ xor2))[0]
-                oOutput.Line('URL: %s' % (oSearch.string))
-                oOutput.Line('puid: %s (%s)' % (binascii.b2a_hex(puid), repr(puid)))
-                oOutput.Line('platform: %d (%s)' % (platform, dPlatforms.get(platform, 'undefined')))
-                oOutput.Line('architecture: %d (%s)' % (architecture, dArchitectures.get(architecture, 'undefined')))
-                oOutput.Line('timestamp: %s' % (FormatTime(timestamp)))
+        if command == commands[0]:
+            oSearch = oREurluuid.search(line)
+            if oSearch != None:
+                if len(oSearch.groups()[0]) >= 22:
+                    try:
+                        decoded = base64.urlsafe_b64decode(oSearch.groups()[0][0:22] + '==')
+                    except:
+                        continue
+
+                    if len(decoded) < struct.calcsize(format):
+                        continue
+                    puid, xor1, xor2, platform_xored, architecture_xored, ts1_xored, ts2_xored, ts3_xored, ts4_xored = struct.unpack(format, decoded)
+                    platform = platform_xored ^ xor1
+                    platformName = dPlatforms.get(platform, UNDEFINED)
+                    if platformName == UNDEFINED and not options.force:
+                        continue
+                    architecture = architecture_xored ^ xor2
+                    architectureName = dArchitectures.get(architecture, UNDEFINED)
+                    if architectureName == UNDEFINED and not options.force:
+                        continue
+                    timestamp = struct.unpack('>I', bytes([ts1_xored ^ xor1, ts2_xored ^ xor2, ts3_xored ^ xor1, ts4_xored ^ xor2]))[0]
+                    oOutput.Line('URL: %s' % (oSearch.string))
+                    oOutput.Line('puid: %s (%s)' % (binascii.b2a_hex(puid), repr(puid)))
+                    oOutput.Line('platform: %d (%s)' % (platform, platformName))
+                    oOutput.Line('architecture: %d (%s)' % (architecture, architectureName))
+                    oOutput.Line('timestamp: %s' % (FormatTime(timestamp)))
+        elif command == commands[1]:
+            oSearch = oREurl8.search(line)
+            if oSearch != None:
+                path = oSearch.groups()[0]
+                checksumValue, checksumConstant = Checksum8LSB(path)
+                if checksumConstant != '' or options.force:
+                    oOutput.Line('URL: %s' % (oSearch.group()))
+                    oOutput.Line('path: %s' % path)
+                    oOutput.Line('checksum: %s (0x%02x)' % (checksumConstant, checksumValue))
+
     if fIn != sys.stdin and type(fIn) != list:
         fIn.close()
 
 def Metatool(command, filenames, options):
-    if command != 'urluuid':
+    if not command in commands:
         print('Unsupported command: %s' % command)
-        print('Valid commands: urluuid')
+        print('Valid commands: %s' % ' '.join(commands))
         return
     oOutput = cOutputResult(options)
     for filename in filenames:
@@ -248,6 +293,7 @@ https://DidierStevens.com'''
     oParser = optparse.OptionParser(usage='usage: %prog [options] command [[@]file ...]\n' + __description__ + moredesc, version='%prog ' + __version__)
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
     oParser.add_option('-o', '--output', type=str, default='', help='Output to file')
+    oParser.add_option('-f', '--force', action='store_true', default=False, help='Force output for unrecognized data')
     (options, args) = oParser.parse_args()
 
     if options.man:
