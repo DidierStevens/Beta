@@ -2,8 +2,8 @@
 
 __description__ = "Tool for Metasploit"
 __author__ = 'Didier Stevens'
-__version__ = '0.0.2'
-__date__ = '2021/03/11'
+__version__ = '0.0.3'
+__date__ = '2021/03/21'
 
 """
 
@@ -14,6 +14,7 @@ Use at your own risk
 History:
   2017/08/17: start
   2021/03/11: 0.0.2 added command url8, Python 3 fix
+  2021/03/21: 0.0.3 CS x64
 
 Todo:
 """
@@ -31,13 +32,17 @@ import struct
 import binascii
 import time
 
+COMMANDS = ['urluuid', 'url8']
+COMMANDS_URLUUID = 0
+COMMANDS_URL8 = 1
+
 def PrintManual():
     manual = '''
 Manual:
 
 This version of the tool recognizes and decodes 2 types of Metasploit URLs.
 
-In this version the only supported command is urluuid.
+In this version the supported commands are: %s.
 
 Example: metatool.py urluuid url.txt
 
@@ -49,8 +54,14 @@ architecture: 2 (ARCH_X64)
 timestamp: 2017/08/15 18:52:53
 
 
-To be completed
-'''
+Example: echo http://example.com/WsJH | metatool.py url8
+
+Output:
+URL: http://example.com/WsJH
+path: WsJH
+checksum: URI_CHECKSUM_INITW (0x5c)
+
+''' % ', '.join(COMMANDS)
     for line in manual.split('\n'):
         print(textwrap.fill(line))
 
@@ -110,8 +121,6 @@ dPlatforms = {
     22: 'nodejs',
     23: 'firefox'
   }
-
-commands = ['urluuid', 'url8']
 
 UNDEFINED = 'undefined'
 
@@ -209,7 +218,8 @@ def Checksum8(data):
 
 def Checksum8LSB(data):
     dMetasploitConstants = {
-        92: 'URI_CHECKSUM_INITW',
+        92: 'URI_CHECKSUM_INITW / CS x86',
+        93: 'CS x64',
         80: 'URI_CHECKSUM_INITP',
         88: 'URI_CHECKSUM_INITJ',
         98: 'URI_CHECKSUM_CONN',
@@ -230,7 +240,7 @@ def MetatoolSingle(command, filename, oOutput, options):
     oREurl8 = re.compile(r'https?://[^/]+/(.{4})\b')
     format = '8sBBBBBBBB'
     for line in ProcessFile(fIn, False):
-        if command == commands[0]:
+        if command == COMMANDS[COMMANDS_URLUUID]:
             oSearch = oREurluuid.search(line)
             if oSearch != None:
                 if len(oSearch.groups()[0]) >= 22:
@@ -256,7 +266,7 @@ def MetatoolSingle(command, filename, oOutput, options):
                     oOutput.Line('platform: %d (%s)' % (platform, platformName))
                     oOutput.Line('architecture: %d (%s)' % (architecture, architectureName))
                     oOutput.Line('timestamp: %s' % (FormatTime(timestamp)))
-        elif command == commands[1]:
+        elif command == COMMANDS[COMMANDS_URL8]:
             oSearch = oREurl8.search(line)
             if oSearch != None:
                 path = oSearch.groups()[0]
@@ -270,9 +280,9 @@ def MetatoolSingle(command, filename, oOutput, options):
         fIn.close()
 
 def Metatool(command, filenames, options):
-    if not command in commands:
+    if not command in COMMANDS:
         print('Unsupported command: %s' % command)
-        print('Valid commands: %s' % ' '.join(commands))
+        print('Valid commands: %s' % ' '.join(COMMANDS))
         return
     oOutput = cOutputResult(options)
     for filename in filenames:
