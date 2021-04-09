@@ -92,7 +92,9 @@ dArchitectures = {
     23: 'ARCH_ZARCH',
     24: 'ARCH_AARCH64',
     25: 'ARCH_MIPS64',
-    26: 'ARCH_PPC64LE'
+    26: 'ARCH_PPC64LE',
+    27: 'ARCH_R',
+    28: 'ARCH_PPCE500V2'
 }
 
 dPlatforms = {
@@ -119,7 +121,14 @@ dPlatforms = {
     20: 'js',
     21: 'python',
     22: 'nodejs',
-    23: 'firefox'
+    23: 'firefox',
+    24: 'r',
+    25: 'apple_ios',
+    26: 'juniper',
+    27: 'unifi',
+    28: 'brocade',
+    29: 'mikrotik',
+    30: 'arista'
   }
 
 UNDEFINED = 'undefined'
