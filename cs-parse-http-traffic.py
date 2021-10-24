@@ -2,10 +2,10 @@
 
 from __future__ import print_function
 
-__description__ = 'Analyze Cobalt Strike HTTP beacon unencrypted traffic'
+__description__ = 'Analyze Cobalt Strike HTTP beacon traffic'
 __author__ = 'Didier Stevens'
 __version__ = '0.0.1'
-__date__ = '2021/04/24'
+__date__ = '2021/10/10'
 
 """
 
@@ -21,6 +21,7 @@ History:
   2021/04/22: continue
   2021/04/23: continue
   2021/04/24: continue
+  2021/10/10: continue
 
 Todo:
 """
@@ -282,7 +283,13 @@ class cStruct(object):
         return len(self.data)
 
 def ProcessReplyPacketData(hexdata, oOutput, oCrypto, options):
-    data = oCrypto.Decrypt(binascii.a2b_hex(hexdata))
+    try:
+        data = oCrypto.Decrypt(binascii.a2b_hex(hexdata))
+    except Exception as e:
+        if e.args != ('HMAC signature invalid',):
+            raise
+        oOutput.Line('HMAC signature invalid\n')
+        return
     if data.startswith(b'MZ'):
         oOutput.Line('MZ payload detected')
         oOutput.Line(' MD5: ' + hashlib.md5(data).hexdigest())
@@ -334,7 +341,7 @@ def ProcessPostPacketDataSub(data, oOutput, oCrypto, options):
     elif callback == 22:
         oOutput.Line(repr(callbackdata[:4]))
         oOutput.Line('-' * 100)
-        oOutput.Line(callbackdata[4:].decode())
+        oOutput.Line(callbackdata[4:].decode('latin'))
         oOutput.Line('-' * 100)
     elif callback in [17, 30, 32]:
         oOutput.Line(callbackdata.decode())
