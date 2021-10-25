@@ -246,7 +246,7 @@ def MetatoolSingle(command, filename, oOutput, options):
     else:
         fIn = open(filename, 'r')
     oREurluuid = re.compile('(?:https?://[^/]+)?/([^/]+)/?')
-    oREurl8 = re.compile(r'https?://[^/]+/(.{4})\b')
+    oREurl8 = re.compile(r'https?://[^/]+/(.{4})[^\w{0-9A-Za-z\-\_}]')
     format = '8sBBBBBBBB'
     for line in ProcessFile(fIn, False):
         if command == COMMANDS[COMMANDS_URLUUID]:
