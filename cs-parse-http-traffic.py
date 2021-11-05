@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Analyze Cobalt Strike HTTP beacon traffic'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.1'
-__date__ = '2021/10/10'
+__version__ = '0.0.2'
+__date__ = '2021/11/05'
 
 """
 
@@ -21,9 +21,16 @@ History:
   2021/04/22: continue
   2021/04/23: continue
   2021/04/24: continue
-  2021/10/10: continue
+  2021/10/07: updated missing modules logic
+  2021/10/17: 0.0.2 added option -i; -r unknown and -k unknown
+  2021/10/28: handle fake gzip
+  2021/10/30: continue instructions processing
+  2021/10/31: added request methods
+  2021/11/01: refactoring instructions processing
+  2021/11/05: refactoring instructions processing
 
 Todo:
+  
 """
 
 import optparse
@@ -36,9 +43,18 @@ import os
 import binascii
 import struct
 import hashlib
-import pyshark
 import hmac
-import Crypto.Cipher.AES
+import base64
+try:
+    import pyshark
+except ImportError:
+    print('pyshark module required: pip install pyshark')
+    exit(-1)
+try:
+    import Crypto.Cipher.AES
+except ImportError:
+    print('Crypto.Cipher.AES module required: pip install pycryptodome')
+    exit(-1)
 
 CS_FIXED_IV = b'abcdefghijklmnop'
 
@@ -54,10 +70,40 @@ This tool is to be defined.
     for line in manual.split('\n'):
         print(textwrap.fill(line))
 
+BEACON_COMMAND_SLEEP = 4
+BEACON_COMMAND_DATA_JITTER = 6
+BEACON_COMMAND_RUN = 78
+
 BEACON_COMMANDS = {
-    4:  'SLEEP',
+    BEACON_COMMAND_SLEEP:  'SLEEP',
+    BEACON_COMMAND_DATA_JITTER:  'DATA_JITTER',
     11: 'DOWNLOAD_START',
     32: 'LIST_PROCESSES',
+
+    3: 'EXIT',
+    5: 'CD',
+    8: 'CHECKIN',
+    11: 'DOWNLOAD',
+    12: 'EXECUTE',
+    13: 'Tasked beacon to spawn features to default process',
+    27: 'GETUID',
+    28: 'REVERT_TOKEN',
+    33: 'KILL',
+    39: 'PWD',
+    41: 'JOBS',
+    48: 'IP_CONFIG',
+    53: 'LIST_FILES',
+    54: 'MKDIR',
+    55: 'DRIVES',
+    56: 'RM',
+    72: 'SETENV',
+    73: 'CP',
+    74: 'MV',
+    77: 'GETPRIVS',
+    BEACON_COMMAND_RUN: 'RUN',
+    80: 'DLLLOAD',
+    85: 'ARGUE',
+    95: 'GETSYSTEM',
     }
 
 BEACON_OUTPUT = {
@@ -87,6 +133,7 @@ BEACON_OUTPUT = {
     24: 'BEACON_OUTPUT_NET',
     25: 'BEACON_OUTPUT_PORTSCAN',
     26: 'BEACON_EXIT',
+    30: 'OUTPUT',
     }
 
 class cOutput():
@@ -104,6 +151,12 @@ class cOutput():
                     self.fOut = open(self.filename, 'w')
             elif self.filenameOption != '':
                 self.fOut = open(self.filenameOption, 'w')
+        self.dReplacements = {}
+
+    def Replace(self, line):
+        for key, value in self.dReplacements.items():
+            line = line.replace(key, value)
+        return line
 
     def ParseHash(self, option):
         if option.startswith('#'):
@@ -150,6 +203,7 @@ class cOutput():
             iter += 1
 
     def Line(self, line, eol='\n'):
+        line = self.Replace(line)
         if self.fOut == None or self.console:
             try:
                 print(line, end=eol)
@@ -219,11 +273,11 @@ class cCrypto(object):
     def __init__(self, rawkey='', hmacaeskeys=''):
         self.rawkey = rawkey
         self.hmacaeskeys = hmacaeskeys
-        if self.rawkey != '':
+        if self.rawkey != '' and self.rawkey != 'unknown':
             sha256digest = hashlib.sha256(binascii.a2b_hex(self.rawkey)).digest()
             self.hmackey = sha256digest[16:]
             self.aeskey = sha256digest[:16]
-        elif self.hmacaeskeys != '':
+        elif self.hmacaeskeys != '' and self.hmacaeskeys != 'unknown':
             self.hmackey = binascii.a2b_hex(self.hmacaeskeys.split(':')[0])
             self.aeskey = binascii.a2b_hex(self.hmacaeskeys.split(':')[1])
         else:
@@ -282,15 +336,82 @@ class cStruct(object):
     def Length(self):
         return len(self.data)
 
-def ProcessReplyPacketData(hexdata, oOutput, oCrypto, options):
+def BASE64URLDecode(data):
+    paddingLength = 4 - len(data) % 4
+    if paddingLength <= 2:
+        data += b'=' * paddingLength
+    return base64.b64decode(data, b'-_')
+
+def StartsWithGetRemainder(strIn, strStart):
+    if strIn.startswith(strStart):
+        return True, strIn[len(strStart):]
+    else:
+        return False, None
+    
+def GetInstructions(instructions, instructionType):
+    for result in instructions.split(';'):
+        match, remainder = StartsWithGetRemainder(result, '7:%s,' % instructionType)
+        if match:
+            if instructionType == 'Output':
+                return ','.join(remainder.split(',')[::-1])
+            else:
+                return remainder
+    return ''
+
+def ProcessInstructions(instructions, rawdata, instructionType):
+    instructions = GetInstructions(instructions, instructionType)
+    if instructions == '':
+        instructions = []
+    else:
+        instructions = [instruction for instruction in instructions.split(',')]
+    data = rawdata
+    for instruction in instructions:
+        instruction = instruction.split(':')
+        opcode = int(instruction[0])
+        operands = instruction[1:]
+        if opcode == 1:
+            data = data[:-int(operands[0])]
+        elif opcode == 2:
+            data = data[int(operands[0]):]
+        elif opcode == 3:
+            data = binascii.a2b_base64(data)
+        elif opcode == 4:
+            pass
+        elif opcode == 7:
+            pass
+        elif opcode == 13:
+            data = BASE64URLDecode(data)
+        elif opcode == 15:
+            xorkey = data[0:4]
+            ciphertext = data[4:]
+            data = []
+            for iter, value in enumerate(ciphertext):
+                data.append(value ^ xorkey[iter % 4])
+            data = bytes(data)
+    return data
+            
+def ProcessReplyPacketData(hexdata, oOutput, oCrypto, dCommandsSummary, options):
+    rawdata = binascii.a2b_hex(hexdata)
+    oOutput.Line('Length raw data: %s' % len(rawdata))
+    rawdata = ProcessInstructions(options.transform, rawdata, 'Input')
+    if rawdata == b'':
+        oOutput.Line('No data')
+        oOutput.Line('')
+        return
+    if options.rawkey == 'unknown' or options.hmacaeskeys == 'unknown':
+        oOutput.Line(binascii.b2a_hex(rawdata).decode())
+        oOutput.Line('')
+        return
     try:
-        data = oCrypto.Decrypt(binascii.a2b_hex(hexdata))
+        data = oCrypto.Decrypt(rawdata)
     except Exception as e:
         if e.args != ('HMAC signature invalid',):
             raise
-        oOutput.Line('HMAC signature invalid\n')
+        oOutput.Line('HMAC signature invalid')
         return
-    if data.startswith(b'MZ'):
+    if data == b'':
+        oOutput.Line('No data')
+    elif data.startswith(b'MZ'):
         oOutput.Line('MZ payload detected')
         oOutput.Line(' MD5: ' + hashlib.md5(data).hexdigest())
         ExtractPayload(data, options)
@@ -301,11 +422,20 @@ def ProcessReplyPacketData(hexdata, oOutput, oCrypto, options):
         data = data[:datasize]
         while len(data) > 0:
             command, argslen, data =  Unpack('>II', data)
+            dCommandsSummary[command] = dCommandsSummary.get(command, 0) + 1
             oOutput.Line('Command: %d %s' % (command, BEACON_COMMANDS.get(command, 'UNKNOWN')))
-            if command == 4: #sleep
+            if command == BEACON_COMMAND_SLEEP:
                 sleep, jitter, _ = Unpack('>II', data)
                 oOutput.Line(' Sleep: %d' % sleep)
                 oOutput.Line(' Jitter: %d' % jitter)
+            elif command == BEACON_COMMAND_DATA_JITTER:
+                oOutput.Line(' Length random data = %d' % argslen)
+            elif command == BEACON_COMMAND_RUN:
+                payload = data[:argslen]
+                oStruct = cStruct(payload)
+                oOutput.Line(' Command: %s' % oStruct.GetString('>I'))
+                oOutput.Line(' Arguments: %s' % oStruct.GetString('>I'))
+                oOutput.Line(' Integer: %d' % oStruct.Unpack('>H'))
             else:
                 oOutput.Line(' Arguments length: %d' % argslen)
                 if argslen > 0:
@@ -326,14 +456,16 @@ def ProcessReplyPacketData(hexdata, oOutput, oCrypto, options):
 
     oOutput.Line('')
 
-def ProcessPostPacketDataSub(data, oOutput, oCrypto, options):
+def ProcessPostPacketDataSub(data, oOutput, oCrypto, dCallbacksSummary, options):
     oStructData = cStruct(oCrypto.Decrypt(data))
     counter = oStructData.Unpack('>I')
     oOutput.Line('Counter: %d' % counter)
     oStructCallbackdata = cStruct(oStructData.GetString('>I'))
     callback = oStructCallbackdata.Unpack('>I')
     callbackdata = oStructCallbackdata.GetBytes()
+    oStructCallbackdataToParse = cStruct(callbackdata)
     oOutput.Line('Callback: %d %s' % (callback, BEACON_OUTPUT.get(callback, 'UNKNOWN')))
+    dCallbacksSummary[callback] = dCallbacksSummary.get(callback, 0) + 1
     if callback in [0, 25]:
         oOutput.Line('-' * 100)
         oOutput.Line(callbackdata.decode())
@@ -343,22 +475,41 @@ def ProcessPostPacketDataSub(data, oOutput, oCrypto, options):
         oOutput.Line('-' * 100)
         oOutput.Line(callbackdata[4:].decode('latin'))
         oOutput.Line('-' * 100)
+    elif callback == 2:
+        parameter1, length = oStructCallbackdataToParse.Unpack('>II')
+        filenameDownload = oStructCallbackdataToParse.GetBytes()
+        oOutput.Line(' parameter1: %d' % parameter1)
+        oOutput.Line(' length: %d' % length)
+        oOutput.Line(' filenameDownload: %s' % filenameDownload.decode())
     elif callback in [17, 30, 32]:
         oOutput.Line(callbackdata.decode())
     elif callback in [3, 8]:
+        oOutput.Line(' Length: %d' % len(callbackdata[4:]))
         oOutput.Line(' MD5: ' + hashlib.md5(callbackdata[4:]).hexdigest())
-        ExtractPayload(callbackdata, options)
+        ExtractPayload(callbackdata[4:], options)
     else:
         oOutput.Line(repr(callbackdata))
     extradata = oStructData.GetBytes()[:-16] # drop hmac
-    oOutput.Line('Extra packet data: %s' % repr(extradata))
+    if len(extradata) > 0:
+        oOutput.Line('Extra packet data: %s' % repr(extradata))
 
     oOutput.Line('')
 
-def ProcessPostPacketData(hexdata, oOutput, oCrypto, options):
-    oStructData = cStruct(binascii.a2b_hex(hexdata))
+def ProcessPostPacketData(hexdata, oOutput, oCrypto, dCallbacksSummary, options):
+    rawdata = binascii.a2b_hex(hexdata)
+    oOutput.Line('Length raw data: %s' % len(rawdata))
+    rawdata = ProcessInstructions(options.transform, rawdata, 'Output')
+    if rawdata == b'':
+        oOutput.Line('No data')
+        oOutput.Line('')
+        return
+    if options.rawkey == 'unknown' or options.hmacaeskeys == 'unknown':
+        oOutput.Line(binascii.b2a_hex(rawdata).decode())
+        oOutput.Line('')
+        return
+    oStructData = cStruct(rawdata)
     while oStructData.Length() > 0:
-        ProcessPostPacketDataSub(oStructData.GetString('>I'), oOutput, oCrypto, options)
+        ProcessPostPacketDataSub(oStructData.GetString('>I'), oOutput, oCrypto, dCallbacksSummary, options)
 
 def AnalyzeCapture(filename, options):
     oOutput = InstantiateCOutput(options)
@@ -368,25 +519,51 @@ def AnalyzeCapture(filename, options):
     else:
         oCrypto = cCrypto(rawkey=options.rawkey)
 
-    capture = pyshark.FileCapture(filename, display_filter=options.displayfilter, use_json=True)
+    dMethods = {}
+    dCommandsSummary = {}
+    dCallbacksSummary = {}
+    capture = pyshark.FileCapture(filename, display_filter=options.displayfilter, use_json=True, include_raw=True)
     for packet in capture:
         if not hasattr(packet, 'http'):
             continue
-        if not hasattr(packet, 'data'):
+
+        if hasattr(packet.http, 'request') and packet.http.has_field('1\\r\\n'): # this is a bug in PyShark, should be fieldname request
+            dMethods[packet.number] = packet.http.get_field('1\\r\\n').method
+
+        data_raw = None
+        if hasattr(packet.http, 'file_data_raw'):
+            data_raw = packet.http.file_data_raw
+        elif hasattr(packet.http, 'content-encoded_entity_body_(gzip)'):
+            data_raw = getattr(packet.http, 'content-encoded_entity_body_(gzip)').data.data_raw
+        else:
             continue
 
         if hasattr(packet.http, 'response'):
             oOutput.Line('Packet number: %d' % packet.number)
-            oOutput.Line('HTTP response')
-            ProcessReplyPacketData(packet.data.data.replace(':', ''), oOutput, oCrypto, options)
+            if hasattr(packet.http, 'request_in') and len(packet.http.request_in.fields) > 0:
+                requestPacket = packet.http.request_in.fields[0].int_value
+                oOutput.Line('HTTP response (for request %d %s)' % (requestPacket, dMethods.get(requestPacket, '')))
+            else:
+                oOutput.Line('HTTP response')
+            ProcessReplyPacketData(data_raw[0], oOutput, oCrypto, dCommandsSummary, options)
 
         if hasattr(packet.http, 'request'):
             oOutput.Line('Packet number: %d' % packet.number)
-            oOutput.Line('HTTP request')
+            oOutput.Line('HTTP request %s' % dMethods.get(packet.number, ''))
             oOutput.Line(packet.http.full_uri)
-            ProcessPostPacketData(packet.data.data.replace(':', ''), oOutput, oCrypto, options)
+            ProcessPostPacketData(data_raw[0], oOutput, oCrypto, dCallbacksSummary, options)
 
     capture.close()
+
+    if len(dCommandsSummary) > 0:
+        oOutput.Line('\nCommands summary:')
+        for command, counter in sorted(dCommandsSummary.items()):
+            oOutput.Line(' %d %s: %d' % (command, BEACON_COMMANDS.get(command, 'UNKNOWN'), counter))
+
+    if len(dCallbacksSummary) > 0:
+        oOutput.Line('\nCallbacks summary:')
+        for callback, counter in sorted(dCallbacksSummary.items()):
+            oOutput.Line(' %d %s: %d' % (callback, BEACON_OUTPUT.get(callback, 'UNKNOWN'), counter))
 
 def ProcessArguments(filenames, options):
     for filename in filenames:
@@ -410,6 +587,7 @@ https://DidierStevens.com'''
     oParser.add_option('-r', '--rawkey', type=str, default='', help="CS beacon's raw key")
     oParser.add_option('-k', '--hmacaeskeys', type=str, default='', help="HMAC and AES keys in hexadecimal separated by :")
     oParser.add_option('-Y', '--displayfilter', type=str, default='http', help="Tshark display filter (default http)")
+    oParser.add_option('-t', '--transform', type=str, default='', help='Transformation instructions')
     (options, args) = oParser.parse_args()
 
     if options.man:
