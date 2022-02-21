@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
-__description__ = 'UDP honeypot'
+__description__ = 'SMTP honeypot'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.1'
-__date__ = '2018/03/24'
+__version__ = '0.0.2'
+__date__ = '2022/02/21'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -12,6 +12,7 @@ Use at your own risk
 
 History:
   2018/03/24: start
+  2022/02/21: Python 3 fix
 
 Todo:
 """
@@ -128,7 +129,7 @@ class cSMTPServer(smtpd.SMTPServer):
         oOutput.LineTimestamped('Email: %s %s %s %s' % (repr(peer), repr(mailfrom), repr(rcpttos), subject))
 
         f = open('%s-%s.eml' % (FormatTime(), ''.join([c for c in subject.replace(' ', '_') if c.lower() in 'abcdefghijklmnopqrstuvwxyz0123456789_'])), 'wb')
-        f.write(data)
+        f.write(data.encode())
         f.close()
 
 def SMTPHoneypot(options):
