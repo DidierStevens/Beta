@@ -2,8 +2,8 @@
 
 __description__ = 'SMTP honeypot'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.2'
-__date__ = '2022/02/21'
+__version__ = '0.0.3'
+__date__ = '2022/03/10'
 
 """
 Source code put in public domain by Didier Stevens, no Copyright
@@ -13,6 +13,7 @@ Use at your own risk
 History:
   2018/03/24: start
   2022/02/21: Python 3 fix
+  2022/03/10: 0.0.3 Python 3 fix
 
 Todo:
 """
@@ -140,7 +141,7 @@ def SMTPHoneypot(options):
     servers = []
     smtpd.__version__ = ''
     for port in ParsePorts(options.ports):
-        servers.append(cSMTPServer((options.address, port), None))
+        servers.append(cSMTPServer((options.address, port), None, decode_data=True))
         oOutput.LineTimestamped('STARTED listening %s %d' % (options.address, port))
 
     asyncore.loop()
