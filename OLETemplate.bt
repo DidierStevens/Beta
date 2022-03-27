@@ -1,0 +1,212 @@
+//---------------------------------------------------------------------------
+/*
+	010 Editor Template for [MS-CFB] Compound File Binary Format file format
+	2014/10/18 v0.0.1
+
+	Source code put in public domain by Didier Stevens, no Copyright
+	https://DidierStevens.com
+	Use at your own risk
+
+	History:
+		2013/10/03: start development with 010 Editor v5.0
+		2014/01/07: continued
+		2014/01/10: continued
+		2014/10/18: added mini streams
+
+	Todo:
+
+*/
+//---------------------------------------------------------------------------
+
+typedef union
+{
+	wstring Wstring;
+	WORD Characters[32];
+} USTRING32;
+
+wstring USTRING32ToWstring(USTRING32 &arg)
+{
+	return arg.Wstring;
+}
+
+typedef struct
+{
+	BYTE _abSig[8];
+	BYTE _clsid[16];
+	USHORT _uMinorVersion;      // [18H,02] minor version of the format: 33 is
+	                            // written by reference implementation
+	USHORT _uDllVersion;        // [1AH,02] major version of the dll/format: 3 for
+	                            // 512-byte sectors, 4 for 4 KB sectors
+	USHORT _uByteOrder;         // [1CH,02] 0xFFFE: indicates Intel byte-ordering
+	USHORT _uSectorShift;       // [1EH,02] size of sectors in power-of-two;
+	                            // typically 9 indicating 512-byte sectors
+	USHORT _uMiniSectorShift;   // [20H,02] size of mini-sectors in power-of-two;
+	                            // typically 6 indicating 64-byte mini-sectors
+	USHORT _usReserved;         // [22H,02] reserved, must be zero
+	ULONG _ulReserved1;         // [24H,04] reserved, must be zero
+	ULONG _csectDir;          // [28H,04] must be zero for 512-byte sectors,
+	                            // number of SECTs in directory chain for 4 KB
+	                            // sectors
+	ULONG _csectFat;          // [2CH,04] number of SECTs in the FAT chain
+	ULONG _sectDirStart;         // [30H,04] first SECT in the directory chain
+	ULONG _signature;     // [34H,04] signature used for transactions; must
+	                            // be zero. The reference implementation
+	                            // does not support transactions
+	ULONG _ulMiniSectorCutoff;  // [38H,04] maximum size for a mini stream;
+	                            // typically 4096 bytes
+	ULONG _sectMiniFatStart;     // [3CH,04] first SECT in the MiniFAT chain
+	ULONG _csectMiniFat;      // [40H,04] number of SECTs in the MiniFAT chain
+	ULONG _sectDifStart;         // [44H,04] first SECT in the DIFAT chain
+	ULONG _csectDif;          // [48H,04] number of SECTs in the DIFAT chain
+	ULONG _sectFat[109];         // [4CH,436] the SECTs of first 109 FAT sectors
+} CFHEAD;
+
+typedef struct
+{
+	USTRING32 entryName <read=USTRING32ToWstring>;
+	USHORT entryNameLength;
+	UBYTE objectType;
+	UBYTE colorFlag;
+	ULONG leftSiblingID;
+	ULONG rightSiblingID;
+	ULONG childID;
+	UBYTE clsid[16];
+	ULONG stateBits;
+	FILETIME creationTime;
+	FILETIME modifiedTime;
+	ULONG startingSectorLocation;
+	UINT64 streamSize;
+} DIRENTRY;
+
+wstring DIRENTRYToString(DIRENTRY &direntry)
+{
+	if (direntry.objectType == 0)
+		return "<UNALLOCATED>";
+	else
+		return direntry.entryName.Wstring;
+}
+
+void FSeekSector(ULONG sectorID)
+{
+	if (sectorID >= 0)
+		FSeek((sectorID + 1) * sectorsize);
+}
+
+typedef struct(int size)
+{
+	UBYTE data[size];
+} STREAMDATA;
+
+void GenerateStream(DIRENTRY &direntry, int sectorsize)
+{
+	local int64 i64SavePosition;
+	local int iIter;
+	local UINT64 streamSize;
+	local UINT64 blockSize;
+
+	i64SavePosition = FTell();
+	iIter = direntry.startingSectorLocation;
+	FSeekSector(iIter);
+	streamSize = 0;
+	blockSize = Min(sectorsize, direntry.streamSize);
+	Printf("blockSize = %d\n", blockSize);
+	while (iIter >= 0 && streamSize <= direntry.streamSize)
+	{
+		Printf("iIter = %d\n", iIter);
+		Printf("FAT[iIter] = %d\n", FAT[iIter]);
+		if (iIter + 1 == FAT[iIter])
+		{
+			blockSize += Min(sectorsize, direntry.streamSize - streamSize);
+			iIter = FAT[iIter];
+		}
+		else
+		{
+//			STREAMDATA streamdata(Min(blockSize, direntry.streamSize - streamSize));
+			STREAMDATA streamdata(blockSize);
+			iIter = FAT[iIter];
+			FSeekSector(iIter);
+			blockSize = Min(sectorsize, direntry.streamSize - streamSize);
+		}
+		streamSize += sectorsize;
+	}
+	FSeek(i64SavePosition);
+}
+
+void GenerateMiniStream(LONG lSectorMinistream, DIRENTRY &direntry, int minisectorsize)
+{
+	local int64 i64SavePosition;
+	local int iIter;
+	local UINT64 streamSize;
+	local UINT64 blockSize;
+
+	i64SavePosition = FTell();
+	iIter = direntry.startingSectorLocation;
+	FSeekSector(lSectorMinistream + iIter);
+	streamSize = 0;
+	blockSize = Min(minisectorsize, direntry.streamSize);
+	Printf("blockSize = %d\n", blockSize);
+	while (iIter >= 0 && streamSize <= direntry.streamSize)
+	{
+		Printf("iIter = %d\n", iIter);
+		Printf("FAT[iIter] = %d\n", FAT[iIter]);
+		if (iIter + 1 == FAT[iIter])
+		{
+			blockSize += Min(minisectorsize, direntry.streamSize - streamSize);
+			iIter = FAT[iIter];
+		}
+		else
+		{
+//			STREAMDATA streamdata(Min(blockSize, direntry.streamSize - streamSize));
+			STREAMDATA ministreamdata(blockSize);
+			iIter = FAT[iIter];
+			FSeekSector(iIter);
+			blockSize = Min(minisectorsize, direntry.streamSize - streamSize);
+		}
+		streamSize += minisectorsize;
+	}
+	FSeek(i64SavePosition);
+}
+
+// Local variables
+
+local int sectorsize;
+local int minisectorsize;
+local LONG dirIter;
+local int iIter;
+local int iCountDirEntries;
+local LONG lSectorMinistream;
+
+// Main
+
+LittleEndian();
+CFHEAD header;
+sectorsize = Pow(2, header._uSectorShift);
+minisectorsize = Pow(2, header._uMiniSectorShift);
+
+FSeekSector(header._sectFat[0]);
+LONG FAT[sectorsize / 4];
+
+dirIter = header._sectDirStart;
+iCountDirEntries = 0;
+lSectorMinistream = -1;
+while (dirIter >= 0)
+{
+	FSeekSector(dirIter);
+	for (iIter = 0; iIter < sectorsize / 128; iIter++)
+	{
+		DIRENTRY direntry <read=DIRENTRYToString>;
+		if (direntry[iCountDirEntries].objectType == 5)
+		{
+			lSectorMinistream = direntry[iCountDirEntries].startingSectorLocation;
+		}
+		if (direntry[iCountDirEntries].objectType == 2)
+		{
+			if (lSectorMinistream < 0)
+				GenerateStream(direntry[iCountDirEntries], sectorsize);
+			else
+				GenerateMiniStream(lSectorMinistream, direntry[iCountDirEntries], sectorsize);
+		}
+		iCountDirEntries++;
+	}
+	dirIter = FAT[dirIter];
+}
