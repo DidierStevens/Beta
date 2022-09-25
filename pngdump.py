@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Template binary file argument'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.2'
-__date__ = '2022/04/18'
+__version__ = '0.0.3'
+__date__ = '2022/09/25'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -43,6 +43,8 @@ History:
   2020/02/05: added WriteBinary to cOutput
   2020/10/21: Python 3 fix in cBinaryFile
   2022/04/18: added detection of remainder
+  2022/09/24: 0.0.3 added IDATs analysis
+  2022/09/25: continue
 
 Todo:
   Document flag arguments in man page
@@ -51,7 +53,6 @@ Todo:
 import optparse
 import sys
 import os
-import zipfile
 import binascii
 import random
 import gzip
@@ -66,6 +67,10 @@ import fnmatch
 import json
 import time
 import zlib
+try:
+    import pyzipper as zipfile
+except ImportError:
+    import zipfile
 if sys.version_info[0] >= 3:
     from io import BytesIO as DataIO
 else:
@@ -288,6 +293,7 @@ Most options can be combined, like #ps# for example.
 
 DEFAULT_SEPARATOR = ','
 QUOTE = '"'
+dumplinelength = 16
 
 def PrintError(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
@@ -649,6 +655,12 @@ def AnalyzeFileError(filename):
     except:
         pass
 
+def CreateZipFileObject(arg1, arg2):
+    if 'AESZipFile' in dir(zipfile):
+        return zipfile.AESZipFile(arg1, arg2)
+    else:
+        return zipfile.ZipFile(arg1, arg2)
+
 class cBinaryFile:
     def __init__(self, filename, zippassword='infected', noextraction=False, literalfilename=False):
         self.filename = filename
@@ -673,7 +685,7 @@ class cBinaryFile:
             elif fch == FCH_DATA:
                 self.fIn = DataIO(data)
             elif not self.noextraction and self.filename.lower().endswith('.zip'):
-                self.oZipfile = zipfile.ZipFile(self.filename, 'r')
+                self.oZipfile = CreateZipFileObject(self.filename, 'r')
                 if len(self.oZipfile.infolist()) == 1:
                     self.fIn = self.oZipfile.open(self.oZipfile.infolist()[0], 'r', self.zippassword)
                     self.extracted = True
@@ -1182,6 +1194,7 @@ class cOutput():
         self.fOut = None
         self.rootFilenames = {}
         self.binary = binary
+        self.mute = False
         if self.binary:
             self.fileoptions = 'wb'
         else:
@@ -1254,6 +1267,8 @@ class cOutput():
             self.fOut.flush()
 
     def Line(self, line, eol='\n'):
+        if self.mute:
+            return
         if self.head:
             if self.headCounter < 10:
                 self.LineSub(line, eol)
@@ -1436,14 +1451,56 @@ def ParsePNGChunk(data):
     chunkCRC32 = struct.unpack(format, crc32bytes)[0]
 
     chunkCRC32Calculated = zlib.crc32(chunkType + chunkData) & 0xffffffff
-    
+
     return chunkType, chunkData, chunkCRC32, chunkCRC32Calculated, data[formatLength + 4 + chunkLength + 4:]
 
 def InstantiateCOutput(options):
     filenameOption = None
     if options.output != '':
         filenameOption = options.output
-    return cOutput(filenameOption)
+    return cOutput(filenameOption, options.dump)
+
+def HexAsciiDump(data, rle=False):
+    return cDump(data, dumplinelength=dumplinelength).HexAsciiDump(rle=rle)
+
+def Dump(data, oOutput, options):
+    if options.dump:
+        IfWIN32SetBinary(sys.stdout)
+        oOutput.WriteBinary(data)
+        return
+
+    oOutput.mute = False
+    if options.hexdump:
+        oOutput.Line(cDump(data, dumplinelength=dumplinelength).HexDump())
+    elif options.asciidumprle:
+        oOutput.Line(cDump(data, dumplinelength=dumplinelength).HexAsciiDump(rle=True))
+    else:
+        oOutput.Line(cDump(data, dumplinelength=dumplinelength).HexAsciiDump())
+
+OPTIONS_SELECT_IDATS = 'idats'
+OPTIONS_SELECT_DECOMPRESSED = 'decompressed'
+OPTIONS_SELECT_LINE = 'line'
+
+def StartsWithGetRemainder(strIn, strStart):
+    if strIn.startswith(strStart):
+        return True, strIn[len(strStart):]
+    else:
+        return False, None
+
+def CheckSelect(options):
+    if options.select in ['']:
+        return False, None, None
+    if options.select in [OPTIONS_SELECT_IDATS, OPTIONS_SELECT_DECOMPRESSED]:
+        return True, options.select, None
+    result, remainder = StartsWithGetRemainder(options.select, OPTIONS_SELECT_LINE + ':')
+    if result:
+        return False, OPTIONS_SELECT_LINE, int(remainder)
+
+    print('Valid select options:')
+    for item in [OPTIONS_SELECT_IDATS, OPTIONS_SELECT_DECOMPRESSED]:
+        print(' %s' % item)
+    print(' line:NUMBER (NUMBER = 1, 2, ...)')
+    raise Exception('Unknown select option: %s' % options.select)
 
 def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile, options, oParserFlag):
     if content == None:
@@ -1465,8 +1522,13 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
 
     (flagoptions, flagargs) = oParserFlag.parse_args(flag.split(' '))
 
+    selectMute, selectType, selectArgument = CheckSelect(options)
+
     try:
         # ----- Put your data processing code here -----
+        oOutput.mute = selectMute
+        bIDATData = b''
+        counterIDAT = 0
         position = 0
         header = data[:8]
         data = data[8:]
@@ -1489,13 +1551,72 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
             else:
                 oOutput.Line(' 0x%08x %s' % (chunkCRC32Calculated, 'crc32 not OK'), eol='')
             if chunkType == b'IHDR':
-                format = '>IIB'
-                width, height, bits = struct.unpack(format, chunkData[:struct.calcsize(format)])
-                oOutput.Line(' width = %d (0x%08x) height = %d (0x%08x) bits = %d' % (width, width, height, height, bits))
+                format = '>IIBBBBB'
+                width, height, bits, colortype, compressionmethod, filtermethod, interlacemethod = struct.unpack(format, chunkData[:struct.calcsize(format)])
+                oOutput.Line(' width = %d (0x%08x) height = %d (0x%08x) bits = %d colortype = %d compressionmethod = %d filtermethod = %d interlacemethod = %d' % (width, width, height, height, bits, colortype, compressionmethod, filtermethod, interlacemethod))
                 oOutput.Line(cDump(chunkData, '  ', position + 8).HexAsciiDump(), eol='')
+            elif chunkType == b'IDAT':
+                bIDATData += chunkData
+                counterIDAT += 1
+                oOutput.Line('')
             else:
                 oOutput.Line('')
             position += 4 + len(chunkType) + len(chunkData) + 4
+        oOutput.Line('IDAT counter: %d' % counterIDAT)
+        if counterIDAT == 0:
+            return
+        if selectType == OPTIONS_SELECT_IDATS:
+            Dump(bIDATData, oOutput, options)
+            return
+
+        oOutput.Line('IDAT data length: %d' % len(bIDATData))
+        try:
+            decompressed = zlib.decompress(bIDATData)
+        except Exception as e:
+            oOutput.Line('ZLIB decompression failed: %s' % e)
+            return
+
+        if selectType == OPTIONS_SELECT_DECOMPRESSED:
+            Dump(decompressed, oOutput, options)
+            return
+
+        oOutput.Line('Decompressed IDAT data length: %d' % len(decompressed))
+        multiplier = {0: 1, 2: 3, 4: 2, 6: 4}[colortype]
+        scanlineSize = math.ceil(width * bits / 8.0) * multiplier
+        oOutput.Line('scanlineSize: %d %f' % (scanlineSize, width * bits / 8.0 * multiplier))
+        filters = []
+        dStegano = {'0': 0, '1': 0}
+        dPrevalence = {iter: 0 for iter in range(0x100)}
+        while len(decompressed) > 0:
+            filters.append(decompressed[0])
+            if selectType == None or selectType == OPTIONS_SELECT_LINE and len(filters) == selectArgument:
+                for byte in decompressed[1:1 + scanlineSize]:
+                    dPrevalence[byte] += 1
+                    if byte & 0x01 == 0x01:
+                        dStegano['1'] += 1
+                    else:
+                        dStegano['0'] += 1
+            if selectType == OPTIONS_SELECT_LINE and len(filters) == selectArgument:
+                oOutput.Line(cDump(decompressed[:1 + scanlineSize], '  ', 0).HexAsciiDump(rle=True), eol='')
+            decompressed = decompressed[1 + scanlineSize:]
+            if len(decompressed) > 0 and len(decompressed) < 1 + scanlineSize:
+                oOutput.Line('Last scan line is too short: %d' % len(decompressed))
+        dFilters = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+        for filter in filters:
+            dFilters[filter] = dFilters.get(filter, 0) + 1
+        dFilterNames = {0: 'None', 1: 'Sub', 2: 'Up', 3: 'Average', 4: 'Paeth'}
+        for i in range(256):
+            if dFilters.get(i, 0) > 0:
+                oOutput.Line('Filter %10s: %d' % (dFilterNames.get(i, 'UNKNOWN'), dFilters[i]))
+        oOutput.Line('height %d len(filters) %d' % (height, len(filters)))
+        oOutput.Line('dStegano: %s' % dStegano)
+        oOutput.Line('Byte stats: %s' % repr(CalculateByteStatistics(dPrevalence=dPrevalence)))
+        if options.verbose:
+            oOutput.Line('dPrevalence:')
+            for byte, count in dPrevalence.items():
+                if count > 0:
+                    oOutput.Line(' %3d 0x%02x: %7d' % (byte, byte, count))
+
         # ----------------------------------------------
     except:
         oLogfile.LineError('Processing file %s %s' % (filename, repr(sys.exc_info()[1])))
@@ -1515,11 +1636,13 @@ def ProcessBinaryFiles(filenames, oLogfile, options, oParserFlag):
             oOutput.Filename(item['name'], index, len(items))
             index += 1
             ProcessBinaryFile(item['name'], item['content'], '', '', oOutput, oLogfile, options, oParserFlag)
+            oOutput.mute = options.select != ''
     else:
         for filename, cutexpression, flag in filenames:
             oOutput.Filename(filename, index, len(filenames))
             index += 1
             ProcessBinaryFile(filename, None, cutexpression, flag, oOutput, oLogfile, options, oParserFlag)
+            oOutput.mute = options.select != ''
 
 def Main():
     moredesc = '''
@@ -1534,6 +1657,12 @@ https://DidierStevens.com'''
     oParser = optparse.OptionParser(usage='usage: %prog [options] [[@]file|cut-expression|flag-expression ...]\n' + __description__ + moredesc, version='%prog ' + __version__, epilog='This tool also accepts flag arguments (#f#), read the man page (-m) for more info.')
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
     oParser.add_option('-o', '--output', type=str, default='', help='Output to file (# supported)')
+    oParser.add_option('-s', '--select', type=str, default='', help='Select')
+    oParser.add_option('-d', '--dump', action='store_true', default=False, help='perform dump')
+    oParser.add_option('-x', '--hexdump', action='store_true', default=False, help='perform hex dump')
+    oParser.add_option('-a', '--asciidump', action='store_true', default=False, help='perform ascii dump')
+    oParser.add_option('-A', '--asciidumprle', action='store_true', default=False, help='perform ascii dump with RLE')
+    oParser.add_option('-V', '--verbose', action='store_true', default=False, help='Verbose output')
     oParser.add_option('-p', '--password', default='infected', help='The ZIP password to be used (default infected)')
     oParser.add_option('-n', '--noextraction', action='store_true', default=False, help='Do not extract from archive file')
     oParser.add_option('-l', '--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')
@@ -1554,6 +1683,8 @@ https://DidierStevens.com'''
     if len(args) != 0 and options.jsoninput:
         print('Error: option -j can not be used with files')
         return
+
+    CheckSelect(options)
 
     oLogfile = cLogfile(options.logfile, options.logcomment)
     oExpandFilenameArguments = cExpandFilenameArguments(args, options.literalfilenames, options.recursedir, options.checkfilenames, '#c#', '#f#')
