@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Template binary file argument'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.3'
-__date__ = '2022/09/25'
+__version__ = '0.0.4'
+__date__ = '2022/10/13'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -45,6 +45,7 @@ History:
   2022/04/18: added detection of remainder
   2022/09/24: 0.0.3 added IDATs analysis
   2022/09/25: continue
+  2022/10/13: 0.0.4 added extra
 
 Todo:
   Document flag arguments in man page
@@ -1479,6 +1480,7 @@ def Dump(data, oOutput, options):
 
 OPTIONS_SELECT_IDATS = 'idats'
 OPTIONS_SELECT_DECOMPRESSED = 'decompressed'
+OPTIONS_SELECT_EXTRA = 'extra'
 OPTIONS_SELECT_LINE = 'line'
 
 def StartsWithGetRemainder(strIn, strStart):
@@ -1490,14 +1492,14 @@ def StartsWithGetRemainder(strIn, strStart):
 def CheckSelect(options):
     if options.select in ['']:
         return False, None, None
-    if options.select in [OPTIONS_SELECT_IDATS, OPTIONS_SELECT_DECOMPRESSED]:
+    if options.select in [OPTIONS_SELECT_IDATS, OPTIONS_SELECT_DECOMPRESSED, OPTIONS_SELECT_EXTRA]:
         return True, options.select, None
     result, remainder = StartsWithGetRemainder(options.select, OPTIONS_SELECT_LINE + ':')
     if result:
         return False, OPTIONS_SELECT_LINE, int(remainder)
 
     print('Valid select options:')
-    for item in [OPTIONS_SELECT_IDATS, OPTIONS_SELECT_DECOMPRESSED]:
+    for item in [OPTIONS_SELECT_IDATS, OPTIONS_SELECT_DECOMPRESSED, OPTIONS_SELECT_EXTRA]:
         print(' %s' % item)
     print(' line:NUMBER (NUMBER = 1, 2, ...)')
     raise Exception('Unknown select option: %s' % options.select)
@@ -1587,28 +1589,36 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
         filters = []
         dStegano = {'0': 0, '1': 0}
         dPrevalence = {iter: 0 for iter in range(0x100)}
-        while len(decompressed) > 0:
-            filters.append(decompressed[0])
+        decompressedToAnalyze = decompressed
+        while len(decompressedToAnalyze) > 0:
+            filters.append(decompressedToAnalyze[0])
             if selectType == None or selectType == OPTIONS_SELECT_LINE and len(filters) == selectArgument:
-                for byte in decompressed[1:1 + scanlineSize]:
+                for byte in decompressedToAnalyze[1:1 + scanlineSize]:
                     dPrevalence[byte] += 1
                     if byte & 0x01 == 0x01:
                         dStegano['1'] += 1
                     else:
                         dStegano['0'] += 1
             if selectType == OPTIONS_SELECT_LINE and len(filters) == selectArgument:
-                oOutput.Line(cDump(decompressed[:1 + scanlineSize], '  ', 0).HexAsciiDump(rle=True), eol='')
-            decompressed = decompressed[1 + scanlineSize:]
-            if len(decompressed) > 0 and len(decompressed) < 1 + scanlineSize:
-                oOutput.Line('Last scan line is too short: %d' % len(decompressed))
+                oOutput.Line(cDump(decompressedToAnalyze[:1 + scanlineSize], '  ', 0).HexAsciiDump(rle=True), eol='')
+            decompressedToAnalyze = decompressedToAnalyze[1 + scanlineSize:]
+            if len(decompressedToAnalyze) > 0 and len(decompressedToAnalyze) < 1 + scanlineSize:
+                oOutput.Line('Last scan line is too short: %d' % len(decompressedToAnalyze))
         dFilters = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
         for filter in filters:
             dFilters[filter] = dFilters.get(filter, 0) + 1
         dFilterNames = {0: 'None', 1: 'Sub', 2: 'Up', 3: 'Average', 4: 'Paeth'}
         for i in range(256):
             if dFilters.get(i, 0) > 0:
-                oOutput.Line('Filter %10s: %d' % (dFilterNames.get(i, 'UNKNOWN'), dFilters[i]))
+                oOutput.Line('Filter %13s: %d' % (dFilterNames.get(i, 'UNKNOWN 0x%02x' % i), dFilters[i]))
         oOutput.Line('height %d len(filters) %d' % (height, len(filters)))
+        if height < len(filters):
+            extraData = decompressed[height * (1 + scanlineSize):]
+            oOutput.Line(' extra data detected: size = %d header = %s' % (len(extraData), repr(extraData[:4])))
+            if selectType == OPTIONS_SELECT_EXTRA:
+                Dump(extraData, oOutput, options)
+                return
+
         oOutput.Line('dStegano: %s' % dStegano)
         oOutput.Line('Byte stats: %s' % repr(CalculateByteStatistics(dPrevalence=dPrevalence)))
         if options.verbose:
