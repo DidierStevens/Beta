@@ -2,10 +2,10 @@
 
 from __future__ import print_function
 
-__description__ = 'Template binary file argument'
+__description__ = 'Dump tool for onenote files'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.1'
-__date__ = '2023/01/20'
+__version__ = '0.0.2'
+__date__ = '2023/01/21'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -14,6 +14,7 @@ Use at your own risk
 
 History:
   2023/01/20: start from template
+  2023/01/21: 0.0.2 refactoring
 
 Todo:
   Document flag arguments in man page
@@ -22,7 +23,6 @@ Todo:
 import optparse
 import sys
 import os
-import zipfile
 import binascii
 import random
 import gzip
@@ -37,6 +37,10 @@ import fnmatch
 import json
 import time
 import csv
+try:
+    import pyzipper as zipfile
+except ImportError:
+    import zipfile
 import hashlib
 if sys.version_info[0] >= 3:
     from io import BytesIO as DataIO
@@ -51,7 +55,7 @@ def PrintManual():
     manual = r'''
 Manual:
 
-This tool is TBC.
+This manual is TBC.
 
 It reads one or more files or stdin and TBC. This tool is very versatile when it comes to handling files, later full details will be provided.
 
@@ -625,6 +629,12 @@ def AnalyzeFileError(filename):
     except:
         pass
 
+def CreateZipFileObject(arg1, arg2):
+    if 'AESZipFile' in dir(zipfile):
+        return zipfile.AESZipFile(arg1, arg2)
+    else:
+        return zipfile.ZipFile(arg1, arg2)
+
 class cBinaryFile:
     def __init__(self, filename, zippassword='infected', noextraction=False, literalfilename=False):
         self.filename = filename
@@ -649,7 +659,7 @@ class cBinaryFile:
             elif fch == FCH_DATA:
                 self.fIn = DataIO(data)
             elif not self.noextraction and self.filename.lower().endswith('.zip'):
-                self.oZipfile = zipfile.ZipFile(self.filename, 'r')
+                self.oZipfile = CreateZipFileObject(self.filename, 'r')
                 if len(self.oZipfile.infolist()) == 1:
                     self.fIn = self.oZipfile.open(self.oZipfile.infolist()[0], 'r', self.zippassword)
                     self.extracted = True
@@ -1088,6 +1098,25 @@ class cDump():
             oDumpStream.Addline(encoded[0+i:length+i])
         return oDumpStream.Content()
 
+    def HexDumpNoWS(self):
+        return self.data.hex()
+
+    def DumpOption(self, option):
+        if option == 'a':
+            return self.HexAsciiDump()
+        elif option == 'A':
+            return self.HexAsciiDump(rle=True)
+        elif option == 'x':
+            return self.HexDump()
+        elif option == 'X':
+            return self.HexDumpNoWS()
+        elif option == 'b':
+            return self.Base64Dump()
+        elif option == 'B':
+            return self.Base64Dump(nowhitespace=True)
+        else:
+            raise Exception('DumpOption: unknown option %' % option)
+
     class cDumpStream():
         def __init__(self, prefix=''):
             self.oStringIO = StringIO()
@@ -1472,7 +1501,56 @@ def InstantiateCOutput(options):
     filenameOption = None
     if options.output != '':
         filenameOption = options.output
-    return cOutput(filenameOption, options.dump)
+    binary = False
+    if hasattr(options, 'dump'):
+        binary = options.dump
+    return cOutput(filenameOption, binary)
+
+class cStruct(object):
+    def __init__(self, data):
+        self.data = data
+        self.originaldata = data
+
+    def Unpack(self, format):
+        formatsize = struct.calcsize(format)
+        if len(self.data) < formatsize:
+            raise Exception('Not enough data')
+        tounpack = self.data[:formatsize]
+        self.data = self.data[formatsize:]
+        result = struct.unpack(format, tounpack)
+        if len(result) == 1:
+            return result[0]
+        else:
+            return result
+
+    def UnpackNamedtuple(self, format, typename, field_names):
+        namedTuple = collections.namedtuple(typename, field_names)
+        formatsize = struct.calcsize(format)
+        if len(self.data) < formatsize:
+            raise Exception('Not enough data')
+        tounpack = self.data[:formatsize]
+        self.data = self.data[formatsize:]
+        result = struct.unpack(format, tounpack)
+        return namedTuple(*result)
+
+    def Truncate(self, length):
+        self.data = self.data[:length]
+
+    def GetBytes(self, length=None):
+        if length == None:
+            length = len(self.data)
+        result = self.data[:length]
+        if len(result) < length:
+            raise Exception('Not enough data')
+        self.data = self.data[length:]
+        return result
+
+    def GetString(self, format):
+        stringLength = self.Unpack(format)
+        return self.GetBytes(stringLength)
+
+    def Length(self):
+        return len(self.data)
 
 def FindAll(data, sub):
     result = []
@@ -1483,6 +1561,117 @@ def FindAll(data, sub):
             return result
         result.append(position)
         start = position + 1
+
+class cEnumeration(object):
+    def __init__(self, iterable, function=lambda x: x):
+        self.iterable = iterable
+        self.function = function
+        self.namedTuple = collections.namedtuple('enum', 'item item_t index counter total first last left left_t right right_t')
+
+    def __iter__(self):
+        self.index = -1
+        self.total = len(self.iterable)
+        return self
+
+    def __next__(self):
+        if self.index < self.total - 1:
+            self.index += 1
+            first = self.index == 0
+            last = self.index == self.total - 1
+            if first:
+                left = None
+                left_t = None
+                self.item = self.iterable[self.index]
+                self.item_t = self.function(self.item)
+            else:
+                left = self.item
+                left_t = self.item_t
+                self.item = self.right
+                self.item_t = self.right_t
+            if last:
+                self.right = None
+                self.right_t = None
+            else:
+                self.right = self.iterable[self.index + 1]
+                self.right_t = self.function(self.right)
+            return self.namedTuple(self.item, self.item_t, self.index, self.index + 1, self.total, first, last, left, left_t, self.right, self.right_t)
+        raise StopIteration
+
+class cMagicValue(object):
+    def __init__(self, data):
+        self.data = data[:4]
+        self.hexadecimal = binascii.b2a_hex(self.data).decode()
+        self.printable = ''.join([chr(byte) if byte >= 32 and byte < 127 else '.' for byte in self.data])
+        self.both = self.printable + ' ' + self.hexadecimal
+
+class cHashCRC32():
+    def __init__(self):
+        self.crc32 = None
+
+    def update(self, data):
+        self.crc32 = zlib.crc32(data)
+
+    def hexdigest(self):
+        return '%08x' % (self.crc32 & 0xffffffff)
+
+class cHashChecksum8():
+    def __init__(self):
+        self.sum = 0
+
+    def update(self, data):
+        if sys.version_info[0] >= 3:
+            self.sum += sum(data)
+        else:
+            self.sum += sum(map(ord, data))
+
+    def hexdigest(self):
+        return '%08x' % (self.sum)
+
+dSpecialHashes = {'crc32': cHashCRC32, 'checksum8': cHashChecksum8}
+
+def GetHashObjects(algorithms):
+    global dSpecialHashes
+    
+    dHashes = {}
+
+    if algorithms == '':
+        algorithms = os.getenv('DSS_DEFAULT_HASH_ALGORITHMS', 'md5')
+    if ',' in algorithms:
+        hashes = algorithms.split(',')
+    else:
+        hashes = algorithms.split(';')
+    for name in hashes:
+        if not name in dSpecialHashes.keys() and not name in hashlib.algorithms_available:
+            print('Error: unknown hash algorithm: %s' % name)
+            print('Available hash algorithms: ' + ' '.join([name for name in list(hashlib.algorithms_available)] + list(dSpecialHashes.keys())))
+            return [], {}
+        elif name in dSpecialHashes.keys():
+            dHashes[name] = dSpecialHashes[name]()
+        else:
+            dHashes[name] = hashlib.new(name)
+
+    return hashes, dHashes
+
+def CalculateChosenHash(data):
+    hashes, dHashes = GetHashObjects('')
+    dHashes[hashes[0]].update(data)
+    return dHashes[hashes[0]].hexdigest(), hashes[0]
+
+def GetDumpOption(options, default=None):
+    dPossibleOptions = {
+        'asciidump': 'a',
+        'hexdump': 'x',
+        'dump': 'd',
+        'asciidumprle': 'A',
+        'hexdumpnows': 'X',
+        'base64': 'b',
+        'base64nows': 'B',
+    }
+
+    for attribute, option in dPossibleOptions.items():
+        if hasattr(options, attribute) and getattr(options, attribute):
+            return option
+    return default
 
 def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile, options, oParserFlag):
     if content == None:
@@ -1506,33 +1695,31 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
 
     try:
         # ----- Put your data processing code here -----
-        if options.select == '':
+        if not oOutput.binary:
             oOutput.Line('File: %s%s' % (filename, IFF(oBinaryFile.extracted, ' (extracted)', '')))
+
         # https://learn.microsoft.com/en-us/openspecs/office_file_formats/ms-onestore/8806fd18-6735-4874-b111-227b83eaac26
-        guid = b'\xE7\x16\xE3\xBD\x65\x26\x11\x45\xA4\xC4\x8D\x4D\x0B\x7A\x9E\xAC'
-        format = '<16sQLQ'
-        sizeFormat = struct.calcsize(format)
-        for index, position in enumerate(FindAll(data, guid)):
-            dummy, cbLength, dummy, dummy = struct.unpack(format, data[position:position+sizeFormat])
-            filedata = data[position+sizeFormat:position+sizeFormat+cbLength]
+        guidHeader_FileDataStoreObject = b'\xE7\x16\xE3\xBD\x65\x26\x11\x45\xA4\xC4\x8D\x4D\x0B\x7A\x9E\xAC'
+        format_FileDataStoreObject = '<16sQLQ' # guidHeader cbLength unused reserved
+
+        for position in cEnumeration(FindAll(data, guidHeader_FileDataStoreObject)):
+            oStruct = cStruct(data[position.item:])
+            nFileDataStoreObject = oStruct.UnpackNamedtuple(format_FileDataStoreObject, 'FileDataStoreObject', 'guidHeader cbLength unused reserved')
+            filedata = oStruct.GetBytes(nFileDataStoreObject.cbLength)
+
             if options.select == '':
-                oOutput.Line('%2d: 0x%08x 0x%08x %s %s' % (index + 1, position, cbLength, hashlib.md5(filedata).hexdigest(), repr(filedata[:4])))
-            elif options.select == str(index + 1):
-                if options.asciidump:
-                    oOutput.Line(cDump(filedata).HexAsciiDump())
-                elif options.asciidumprle:
-                    oOutput.Line(cDump(filedata).HexAsciiDump(rle=True))
-                elif options.hexdump:
-                    oOutput.Line(cDump(filedata).HexDump())
-                elif options.dump:
+                oOutput.Line('%2d: 0x%08x %s 0x%08x %s' % (position.counter, position.item, cMagicValue(filedata).both, nFileDataStoreObject.cbLength, CalculateChosenHash(filedata)[0]))
+            elif options.select == str(position.counter):
+                dumpoption = GetDumpOption(options, 'a')
+                if dumpoption == 'd':
                     oOutput.WriteBinary(filedata)
+                else:
+                    oOutput.Line(cDump(filedata).DumpOption(dumpoption), eol='')
         # ----------------------------------------------
     except:
         oLogfile.LineError('Processing file %s %s' % (filename, repr(sys.exc_info()[1])))
         if not options.ignoreprocessingerrors:
             raise
-
-#    data = CutData(cBinaryFile(filename, C2BIP3(options.password), options.noextraction, options.literalfilenames).Data(), cutexpression)[0]
 
 def ProcessBinaryFiles(filenames, oLogfile, options, oParserFlag):
     oOutput = InstantiateCOutput(options)
@@ -1567,8 +1754,11 @@ https://DidierStevens.com'''
     oParser.add_option('-s', '--select', default='', help='select item nr for dumping (a for all)')
     oParser.add_option('-d', '--dump', action='store_true', default=False, help='perform dump')
     oParser.add_option('-x', '--hexdump', action='store_true', default=False, help='perform hex dump')
+    oParser.add_option('-X', '--hexdumpnows', action='store_true', default=False, help='perform hex dump without whitespace')
     oParser.add_option('-a', '--asciidump', action='store_true', default=False, help='perform ascii dump')
     oParser.add_option('-A', '--asciidumprle', action='store_true', default=False, help='perform ascii dump with RLE')
+    oParser.add_option('-b', '--base64', action='store_true', default=False, help='perform BASE64 dump')
+    oParser.add_option('-B', '--base64nows', action='store_true', default=False, help='perform BASE64 dump without whitespace')
     oParser.add_option('-p', '--password', default='infected', help='The ZIP password to be used (default infected)')
     oParser.add_option('-n', '--noextraction', action='store_true', default=False, help='Do not extract from archive file')
     oParser.add_option('-l', '--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')
