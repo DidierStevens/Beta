@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Template binary file argument'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.4'
-__date__ = '2022/10/13'
+__version__ = '0.0.5'
+__date__ = '2023/03/22'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -46,6 +46,7 @@ History:
   2022/09/24: 0.0.3 added IDATs analysis
   2022/09/25: continue
   2022/10/13: 0.0.4 added extra
+  2023/03/22: 0.0.5 added option -f
 
 Todo:
   Document flag arguments in man page
@@ -1504,6 +1505,23 @@ def CheckSelect(options):
     print(' line:NUMBER (NUMBER = 1, 2, ...)')
     raise Exception('Unknown select option: %s' % options.select)
 
+def FindAll(data, sub):
+    result = []
+    start = 0
+    while True:
+        position = data.find(sub, start)
+        if position == -1:
+            return result
+        result.append(position)
+        start = position + 1
+
+def FindAllList(data, subs):
+    result = []
+    for sub in subs:
+        positions = FindAll(data, sub)
+        result.extend([[position, sub] for position in positions])
+    return sorted(result)
+
 def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile, options, oParserFlag):
     if content == None:
         try:
@@ -1529,6 +1547,34 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
     try:
         # ----- Put your data processing code here -----
         oOutput.mute = selectMute
+
+        pngheader = b'\x89PNG\r\n\x1a\n'
+        if options.find:
+            dStats = {}
+            searchfor = [pngheader, b'IHDR', b'PLTE', b'IDAT', b'IEND', b'cHRM', b'gAMA', b'iCCP', b'sBIT', b'sRGB', b'bKGD', b'hIST', b'tRNS', b'pHYs', b'sPLT', b'tIME', b'iTXt', b'tEXt', b'zTXt']
+            nextPosition = None
+            for position, sub in FindAllList(data, searchfor):
+                dStats[sub] = dStats.get(sub, 0) + 1
+                if sub != pngheader:
+                    position = position - 4
+                if nextPosition != None and nextPosition != position:
+                    oOutput.Line('p=0x%08x           l=0x%08x unexpected data' % (nextPosition, position - nextPosition))
+                if sub == pngheader:
+                    oOutput.Line('p=0x%08x expected header present' % (position))
+                    nextPosition = position + len(sub)
+                else:
+                    chunkType, chunkData, chunkCRC32, chunkCRC32Calculated, remainder = ParsePNGChunk(data[position:])
+                    oOutput.Line('p=0x%08x t=%s l=0x%08x 0x%08x' % (position, chunkType, len(chunkData), chunkCRC32), eol='')
+                    if chunkCRC32 == chunkCRC32Calculated:
+                        oOutput.Line(' crc32 OK')
+                    else:
+                        oOutput.Line(' 0x%08x %s' % (chunkCRC32Calculated, 'crc32 not OK'))
+                    nextPosition = position + 3 * 4 + len(chunkData)
+            oOutput.Line('Stats:')
+            for key, value in dStats.items():
+                oOutput.Line(' %s: %d' % (key, value))
+            return
+
         bIDATData = b''
         counterIDAT = 0
         position = 0
@@ -1673,6 +1719,7 @@ https://DidierStevens.com'''
     oParser.add_option('-a', '--asciidump', action='store_true', default=False, help='perform ascii dump')
     oParser.add_option('-A', '--asciidumprle', action='store_true', default=False, help='perform ascii dump with RLE')
     oParser.add_option('-V', '--verbose', action='store_true', default=False, help='Verbose output')
+    oParser.add_option('-f', '--find', action='store_true', default=False, help='Find chuncks')
     oParser.add_option('-p', '--password', default='infected', help='The ZIP password to be used (default infected)')
     oParser.add_option('-n', '--noextraction', action='store_true', default=False, help='Do not extract from archive file')
     oParser.add_option('-l', '--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')
