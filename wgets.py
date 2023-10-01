@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = "wgets"
 __author__ = 'Didier Stevens'
-__version__ = '0.0.2'
-__date__ = '2023/04/01'
+__version__ = '0.0.3'
+__date__ = '2023/08/17'
 
 """
 
@@ -29,9 +29,10 @@ History:
   2022/12/10: options.limitrequests
   2023/03/31: options.sleep
   2023/04/01: change GetItem to recursive function to support [] and [integer]
+  2023/08/17: 0.0.3 added requery, intermediatesave, includeargs
 
 Todo:
-  work out logic to save JSON file at regular intervals  
+  work out logic to save JSON file at regular intervals
 """
 
 import optparse
@@ -616,14 +617,19 @@ def ProcessTextFile(filename, oOutput, oLogfile, dDatabase, options):
     rows = []
     requested = False
     requestCounter = 0
+    databaseCounter = 0
     oQuota = cQuota(options.quota)
+    starttime = time.time()
     with TextFile(filename, oLogfile) as fIn:
         try:
+            lines = []
             for line in ProcessFile(fIn, options, False):
+                lines.append(line)
+            for line in lines:
                 # ----- Put your line processing code here -----
                 if options.delay != 0 and requested:
                     time.sleep(options.delay)
-                if line in dDatabase:
+                if line in dDatabase and not str(dDatabase[line][0]) in options.requery.split(','):
                     status = dDatabase[line][0]
                     resultOriginal = dDatabase[line][1]
                     requested = False
@@ -658,7 +664,7 @@ def ProcessTextFile(filename, oOutput, oLogfile, dDatabase, options):
                 if resultOriginal == None:
                     results = []
                     if options.pickle == '':
-                        oOutput.Line(MakeCSVLine([line, IFF(requested, '1', '0'), status], DEFAULT_SEPARATOR, QUOTE))
+                        oOutput.Line(MakeCSVLine([line, IFF(requested, '1', '0'), status], options.separator, QUOTE))
                 elif options.iterate == '':
                     results = [resultOriginal]
                 else:
@@ -688,11 +694,23 @@ def ProcessTextFile(filename, oOutput, oLogfile, dDatabase, options):
                         rows.append(row)
                         oOutput.Line('%d: %d %s' % (len(rows), status, line))
                     else:
-                        oOutput.Line(MakeCSVLine(row, DEFAULT_SEPARATOR, QUOTE))
+                        oOutput.Line(MakeCSVLine(row, options.separator, QUOTE))
                 if requested:
                     requestCounter += 1
+                    if options.database != '' and requestCounter % options.intermediatesave == 0:
+                        json.dump(dDatabase, open(options.database, 'w'))
+                        elapsed = time.time() - starttime
+                        remaining = len(lines) - requestCounter - databaseCounter
+                        speed = requestCounter / elapsed
+                        remainingSeconds = remaining / speed
+                        eta = '%04d/%02d/%02d %02d:%02d:%02d' % time.localtime(time.time() + remainingSeconds)[0:6]
+                        print('Intermediate database saved (requestCounter %d elapsed %d requests/second %.02f remaining %d %ds %.02fh %s)' % (requestCounter, elapsed, speed, remaining, remainingSeconds, remainingSeconds / 3600.0, eta))
+
                     if options.limitrequests != 0 and options.limitrequests <= requestCounter:
                         break
+                else:
+                    databaseCounter += 1
+
                 # ----------------------------------------------
         except:
             oLogfile.LineError('Processing file %s %s' % (filename, repr(sys.exc_info()[1])))
@@ -716,13 +734,13 @@ def FormatTime(epoch=None):
         epoch = time.time()
     return '%04d-%02d-%02d %02d:%02d:%02d' % time.localtime(epoch)[0:6]
 
-def DictionaryToString(dictionary):
+def DictionaryToString(dictionary, separator='~'):
     if not isinstance(dictionary, dict):
         return dictionary
     result = []
     for key, value in dictionary.items():
         result.append('%s=%s' % (key, value))
-    return '~'.join(result)
+    return separator.join(result)
 
 def ProcessTextFiles(filenames, oLogfile, options):
     if options.execute != '':
@@ -747,6 +765,9 @@ def ProcessTextFiles(filenames, oLogfile, options):
 
     if options.firstline != '':
         oOutput.Line(options.firstline)
+    if options.includeargs:
+        oOutput.Line('#%s' % repr(sys.argv))
+        oOutput.Line('#%s' % ' '.join([('"%s"' % arg)  if ' ' in arg else arg for arg in sys.argv]))
     for index, filename in enumerate(filenames):
         oOutput.Filename(filename, index, len(filenames))
         ProcessTextFile(filename, oOutput, oLogfile, dDatabase, options)
@@ -777,11 +798,12 @@ https://DidierStevens.com'''
     oParser.add_option('-D', '--database', type=str, default='', help='Database with results')
     oParser.add_option('-A', '--useragent', type=str, default=__description__ + ' ' + __version__, help='User Agent String')
     oParser.add_option('-H', '--header', type=str, default='', help='Header to add')
-    oParser.add_option('-d', '--delay', type=int, default=1, help='Delay (in seconds) between queries (use 0 to have no delay)')
+    oParser.add_option('-d', '--delay', type=float, default=1, help='Delay (in seconds) between queries (use 0 to have no delay)')
     oParser.add_option('-l', '--limitrequests', type=int, default=0, help='Maximum number of requests')
     oParser.add_option('-s', '--script', type=str, default='', help='Script with definitions to include')
     oParser.add_option('-e', '--execute', default='', help='Commands to execute')
     oParser.add_option('-Q', '--quota', default='', help='Quota overrun handling')
+    oParser.add_option('-S', '--separator', type=str, default=',', help='CSV separator')
     oParser.add_option('--firstline', default='', help='First line to print')
     oParser.add_option('--alldatabase', action='store_true', default=False, help='Store all results in database, not only 200')
     oParser.add_option('--literalfilenames', action='store_true', default=False, help='Do not interpret filenames')
@@ -791,6 +813,9 @@ https://DidierStevens.com'''
     oParser.add_option('--logcomment', type=str, default='', help='A string with comments to be included in the log file')
     oParser.add_option('--ignoreprocessingerrors', action='store_true', default=False, help='Ignore errors during file processing')
     oParser.add_option('--sleep', default='', help='Sleep before starting queries')
+    oParser.add_option('--requery', default='', help='Comma separated list of status codes to requery')
+    oParser.add_option('--intermediatesave', type=int, default=100, help='Save database every 100 requests (default)')
+    oParser.add_option('--includeargs', action='store_true', default=False, help='Include args')
     (options, args) = oParser.parse_args()
 
     if options.man:
@@ -809,6 +834,9 @@ https://DidierStevens.com'''
         PrintError('\nWarning:')
         PrintError(oExpandFilenameArguments.message)
         oLogfile.Line('Warning', repr(oExpandFilenameArguments.message))
+
+    if options.separator == '\\t':
+        options.separator = '\t'
 
     ProcessTextFiles(oExpandFilenameArguments.Filenames(), oLogfile, options)
 
