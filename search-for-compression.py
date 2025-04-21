@@ -4,7 +4,7 @@ from __future__ import print_function
 
 __description__ = 'Tool to search for compressed data'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.2'
+__version__ = '0.0.3'
 __date__ = '2025/04/21'
 
 """
@@ -17,7 +17,7 @@ History:
   2019/08/16: continue
   2019/08/18: added options -s, -x, -a, ...
   2023/09/23: 0.0.2 refactoring; --jsonoutput; YARA support
-  2025/04/21: bugfix YARACompile
+  2025/04/21: 0.0.3 bugfix YARACompile
 
 Todo:
   Document flag arguments in man page
