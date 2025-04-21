@@ -5,7 +5,7 @@ from __future__ import print_function
 __description__ = 'Tool to search for compressed data'
 __author__ = 'Didier Stevens'
 __version__ = '0.0.2'
-__date__ = '2023/09/30'
+__date__ = '2025/04/21'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -16,7 +16,8 @@ History:
   2019/08/10: start
   2019/08/16: continue
   2019/08/18: added options -s, -x, -a, ...
-  2023/09/23: 0.0.2 refactoring; --jsonoutput
+  2023/09/23: 0.0.2 refactoring; --jsonoutput; YARA support
+  2025/04/21: bugfix YARACompile
 
 Todo:
   Document flag arguments in man page
@@ -53,6 +54,11 @@ if sys.version_info[0] >= 3:
     from io import StringIO
 else:
     from cStringIO import StringIO
+try:
+    import yara
+except ImportError:
+    pass
+
 
 def PrintManual():
     manual = r'''
@@ -1810,6 +1816,35 @@ class cWriteProcessedFile():
                 fOut.write(data)
         return newfilename
 
+def YARACompile(ruledata):
+    if ruledata.startswith('#'):
+        if ruledata.startswith('#h#'):
+            rule = binascii.a2b_hex(ruledata[3:]).decode('latin')
+        elif ruledata.startswith('#b#'):
+            rule = binascii.a2b_base64(ruledata[3:]).decode('latin')
+        elif ruledata.startswith('#s#'):
+            rule = 'rule string {strings: $a = "%s" ascii wide nocase condition: $a}' % ruledata[3:]
+        elif ruledata.startswith('#q#'):
+            rule = ruledata[3:].replace("'", '"')
+        elif ruledata.startswith('#x#'):
+            rule = 'rule hexadecimal {strings: $a = { %s } condition: $a}' % ruledata[3:]
+        elif ruledata.startswith('#r#'):
+            rule = 'rule regex {strings: $a = /%s/ ascii wide nocase condition: $a}' % ruledata[3:]
+        else:
+            rule = ruledata[1:]
+        return yara.compile(source=rule, externals={'streamname': '', 'VBA': False}), rule
+    else:
+        dFilepaths = {}
+        if os.path.isdir(ruledata):
+            for root, dirs, files in os.walk(ruledata):
+                for file in files:
+                    filename = os.path.join(root, file)
+                    dFilepaths[filename] = filename
+        else:
+            for filename in ProcessAt(ruledata):
+                dFilepaths[filename] = filename
+        return yara.compile(filepaths=dFilepaths, externals={'streamname': '', 'VBA': False}), ','.join(dFilepaths.values())
+
 class cMyJSONOutput():
 
     def __init__(self):
@@ -1850,7 +1885,7 @@ def ExtraInfoHEADASCII(data):
         return ''
     return ''.join([IFF(b >= 32 and b < 127, chr(b), '.') for b in data[:8]])
 
-def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile, options, oParserFlag):
+def ProcessBinaryFile(filename, content, cutexpression, flag, rules, oOutput, oLogfile, options, oParserFlag):
     if content == None:
         try:
             oBinaryFile = cBinaryFile(filename, C2BIP3(options.password), options.noextraction, options.literalfilenames)
@@ -1885,6 +1920,17 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
                 counter += 1
                 if options.jsonoutput:
                     oMyJSONOutput.AddIdItem(counter, '0x%08x' % (len(data) - len(buffer)), decompressed)
+                elif options.yara != None:
+                    matches = rules.match(data=decompressed)
+                    if matches:
+                        oOutput.Line('%d: 0x%08x %d %d %d' % (counter, len(data) - len(buffer), lenCompressed, len(decompressed), len(remainder)))
+                    for result in matches:
+                        print('               YARA rule: %s' % result.rule)
+                        if options.yarastrings:
+                            for stringdata in result.strings:
+                                print('               %06x %s:' % (stringdata[0], stringdata[1]))
+                                print('                %s' % binascii.hexlify(C2BIP3(stringdata[2])))
+                                print('                %s' % repr(stringdata[2]))
                 elif options.select == '':
                     if len(decompressed) == 0:
                        ratio = '    '
@@ -1920,6 +1966,17 @@ def AddFilesToPriorRunsDatabase(dDatabase, filenamedatabase):
     json.dump(dDatabase, open(jsonfilename, 'w'))
 
 def ProcessBinaryFiles(filenames, oLogfile, options, oParserFlag):
+    rules = None
+    if options.yara != None:
+        if not 'yara' in sys.modules:
+            print('Error: option yara requires the YARA Python module.')
+            if sys.version >= '2.7.9':
+                print("You can use PIP to install yara-python like this: pip install yara-python\npip is located in Python's Scripts folder.\n")
+            return returnCode
+        rules, rulesVerbose = YARACompile(options.yara)
+        if options.verbose:
+            print(rulesVerbose)
+
     oOutput = InstantiateCOutput(options)
     index = 0
     if options.jsoninput:
@@ -1929,7 +1986,7 @@ def ProcessBinaryFiles(filenames, oLogfile, options, oParserFlag):
         for item in items:
             oOutput.Filename(item['name'], index, len(items))
             index += 1
-            ProcessBinaryFile(item['name'], item['content'], '', '', oOutput, oLogfile, options, oParserFlag)
+            ProcessBinaryFile(item['name'], item['content'], '', '', rules, oOutput, oLogfile, options, oParserFlag)
     else:
         if options.filenamedatabase != '':
             filenames, dDatabaseFilenames = RemoveFilesFromPriorRuns(filenames, options.filenamedatabase)
@@ -1940,7 +1997,7 @@ def ProcessBinaryFiles(filenames, oLogfile, options, oParserFlag):
             oOutput.Filename(filename, index, len(filenames))
             index += 1
             dDatabaseFilenames[filename] = time.time()
-            ProcessBinaryFile(filename, None, cutexpression, flag, oOutput, oLogfile, options, oParserFlag)
+            ProcessBinaryFile(filename, None, cutexpression, flag, rules, oOutput, oLogfile, options, oParserFlag)
 
         if options.filenamedatabase != '':
             AddFilesToPriorRunsDatabase(dDatabaseFilenames, options.filenamedatabase)
@@ -1960,6 +2017,9 @@ https://DidierStevens.com'''
     oParser.add_option('-n', '--minsize', type=int, default=0, help='Minimum size of decompressed data (default 0)')
     oParser.add_option('-D', '--deep', type=int, default=0, help='Deep scan (default 0)')
     oParser.add_option('-j', '--jsonoutput', action='store_true', default=False, help='produce json output')
+    oParser.add_option('-V', '--verbose', action='store_true', default=False, help='verbose output with decoder errors and YARA rules')
+    oParser.add_option('-y', '--yara', help="YARA rule-file, @file, directory or #rule to check streams (YARA search doesn't work with -s option)")
+    oParser.add_option('--yarastrings', action='store_true', default=False, help='Print YARA strings')
     oParser.add_option('-o', '--output', type=str, default='', help='Output to file (# supported)')
     oParser.add_option('-p', '--password', default='infected', help='The ZIP password to be used (default infected)')
     oParser.add_option('--noextraction', action='store_true', default=False, help='Do not extract from archive file')
