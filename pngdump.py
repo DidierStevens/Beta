@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Template binary file argument'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.5'
-__date__ = '2023/03/22'
+__version__ = '0.0.6'
+__date__ = '2025/04/29'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -47,6 +47,7 @@ History:
   2022/09/25: continue
   2022/10/13: 0.0.4 added extra
   2023/03/22: 0.0.5 added option -f
+  2025/04/29: 0.0.6 added option -R
 
 Todo:
   Document flag arguments in man page
@@ -292,6 +293,8 @@ Most options can be combined, like #ps# for example.
 '''
     for line in manual.split('\n'):
         print(textwrap.fill(line, 79))
+
+pngheader = b'\x89PNG\r\n\x1a\n'
 
 DEFAULT_SEPARATOR = ','
 QUOTE = '"'
@@ -1522,6 +1525,57 @@ def FindAllList(data, subs):
         result.extend([[position, sub] for position in positions])
     return sorted(result)
 
+def FindChunks(data):
+    if len(data) == 0:
+        return []
+    searchfor = [pngheader, b'IHDR', b'PLTE', b'IDAT', b'IEND', b'cHRM', b'gAMA', b'iCCP', b'sBIT', b'sRGB', b'bKGD', b'hIST', b'tRNS', b'pHYs', b'sPLT', b'tIME', b'iTXt', b'tEXt', b'zTXt']
+    chunks = []
+    finds = []
+    for position, sub in FindAllList(data, searchfor):
+        if sub == pngheader:
+            finds.append([position, sub])
+        elif position >= 4:
+            finds.append([position - 4, sub])
+    if finds == []:
+        chunks = [[0, None, len(data)]]
+    else:
+        nextPosition = None
+        if finds[0][0] != 0:
+            chunks = [[0, None, finds[0][0]]]
+            nextPosition = finds[0][0]
+        for position, sub in finds:
+            if nextPosition != None and nextPosition != position:
+                chunks.append([nextPosition, None, position - nextPosition])
+            if sub == pngheader:
+                chunks.append([position, sub, len(sub)])
+                nextPosition = position + len(sub)
+            else:
+                chunkType, chunkData, chunkCRC32, chunkCRC32Calculated, remainder = ParsePNGChunk(data[position:])
+                chunks.append([position, sub, 3 * 4 + len(chunkData)])
+                nextPosition = position + 3 * 4 + len(chunkData)
+        if nextPosition < len(data):
+                chunks.append([nextPosition, None, len(data) - nextPosition])
+    return chunks
+
+def ParseChunks(data):
+    header = data[:8]
+    data = data[8:]
+    if header == pngheader:
+        chunks = [[0, header, len(header)]]
+    else:
+        chunks = [[0, None, 8]]
+    position = 8
+    while True:
+        chunkType, chunkData, chunkCRC32, chunkCRC32Calculated, remainder = ParsePNGChunk(data)
+        if chunkType == None:
+            if len(data) != 0:
+                chunks.append([position, None, len(data)])
+            break
+        data = remainder
+        chunks.append([position, chunkType, len(chunkData) + 3 * 4])
+        position += 4 + len(chunkType) + len(chunkData) + 4
+    return chunks
+
 def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile, options, oParserFlag):
     if content == None:
         try:
@@ -1548,68 +1602,58 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
         # ----- Put your data processing code here -----
         oOutput.mute = selectMute
 
-        pngheader = b'\x89PNG\r\n\x1a\n'
-        if options.find:
-            dStats = {}
-            searchfor = [pngheader, b'IHDR', b'PLTE', b'IDAT', b'IEND', b'cHRM', b'gAMA', b'iCCP', b'sBIT', b'sRGB', b'bKGD', b'hIST', b'tRNS', b'pHYs', b'sPLT', b'tIME', b'iTXt', b'tEXt', b'zTXt']
-            nextPosition = None
-            for position, sub in FindAllList(data, searchfor):
-                dStats[sub] = dStats.get(sub, 0) + 1
-                if sub != pngheader:
-                    position = position - 4
-                if nextPosition != None and nextPosition != position:
-                    oOutput.Line('p=0x%08x           l=0x%08x unexpected data' % (nextPosition, position - nextPosition))
-                if sub == pngheader:
-                    oOutput.Line('p=0x%08x expected header present' % (position))
-                    nextPosition = position + len(sub)
-                else:
-                    chunkType, chunkData, chunkCRC32, chunkCRC32Calculated, remainder = ParsePNGChunk(data[position:])
-                    oOutput.Line('p=0x%08x t=%s l=0x%08x 0x%08x' % (position, chunkType, len(chunkData), chunkCRC32), eol='')
-                    if chunkCRC32 == chunkCRC32Calculated:
-                        oOutput.Line(' crc32 OK')
-                    else:
-                        oOutput.Line(' 0x%08x %s' % (chunkCRC32Calculated, 'crc32 not OK'))
-                    nextPosition = position + 3 * 4 + len(chunkData)
-            oOutput.Line('Stats:')
-            for key, value in dStats.items():
-                oOutput.Line(' %s: %d' % (key, value))
+        if options.raw:
+            try:
+                from PIL import Image
+            except ImportError:
+                print('Module Pillow is required for option --raw.')
+                return
+            
+            image = Image.open(DataIO(data))
+            rawImageData = image.tobytes('raw')
+            Dump(rawImageData, oOutput, options)
             return
 
+        if options.find:
+            chunks = FindChunks(data)
+        else:
+            chunks = ParseChunks(data)
+
+        dStats = {}
         bIDATData = b''
         counterIDAT = 0
-        position = 0
-        header = data[:8]
-        data = data[8:]
-        if header == b'\x89PNG\r\n\x1a\n':
-            oOutput.Line('p=0x%08x expected header present' % (position))
-        else:
-            oOutput.Line('p=0x%08x found unexpected header: %s' % (position, repr(header)))
-        chunkType = 0
-        position = 8
-        while True:
-            chunkType, chunkData, chunkCRC32, chunkCRC32Calculated, remainder = ParsePNGChunk(data)
-            if chunkType == None:
-                if len(data) != 0:
-                    oOutput.Line('p=0x%08x remainder l=0x%08x %s' % (position, len(data), repr(data)[:80]))
-                break
-            data = remainder
-            oOutput.Line('p=0x%08x t=%s l=0x%08x 0x%08x' % (position, chunkType, len(chunkData), chunkCRC32), eol='')
-            if chunkCRC32 == chunkCRC32Calculated:
-                oOutput.Line(' crc32 OK', eol='')
+        for position, sub, length in chunks:
+            dStats[sub] = dStats.get(sub, 0) + 1
+            if sub == pngheader:
+                if position == 0:
+                    oOutput.Line('p=0x%08x expected header present' % (position))
+                else:
+                    oOutput.Line('p=0x%08x header at unexpected position' % (position))
+            elif sub == None:
+                oOutput.Line('p=0x%08x           l=0x%08x unexpected data' % (position, length))
             else:
-                oOutput.Line(' 0x%08x %s' % (chunkCRC32Calculated, 'crc32 not OK'), eol='')
-            if chunkType == b'IHDR':
-                format = '>IIBBBBB'
-                width, height, bits, colortype, compressionmethod, filtermethod, interlacemethod = struct.unpack(format, chunkData[:struct.calcsize(format)])
-                oOutput.Line(' width = %d (0x%08x) height = %d (0x%08x) bits = %d colortype = %d compressionmethod = %d filtermethod = %d interlacemethod = %d' % (width, width, height, height, bits, colortype, compressionmethod, filtermethod, interlacemethod))
-                oOutput.Line(cDump(chunkData, '  ', position + 8).HexAsciiDump(), eol='')
-            elif chunkType == b'IDAT':
-                bIDATData += chunkData
-                counterIDAT += 1
-                oOutput.Line('')
-            else:
-                oOutput.Line('')
-            position += 4 + len(chunkType) + len(chunkData) + 4
+                chunkType, chunkData, chunkCRC32, chunkCRC32Calculated, remainder = ParsePNGChunk(data[position:position + length])
+                oOutput.Line('p=0x%08x t=%s l=0x%08x 0x%08x' % (position, chunkType, len(chunkData), chunkCRC32), eol='')
+                if chunkCRC32 == chunkCRC32Calculated:
+                    oOutput.Line(' crc32 OK', eol='')
+                else:
+                    oOutput.Line(' 0x%08x %s' % (chunkCRC32Calculated, 'crc32 not OK'), eol='')
+                if chunkType == b'IHDR':
+                    format = '>IIBBBBB'
+                    width, height, bits, colortype, compressionmethod, filtermethod, interlacemethod = struct.unpack(format, chunkData[:struct.calcsize(format)])
+                    oOutput.Line(' width = %d (0x%08x) height = %d (0x%08x) bits = %d colortype = %d compressionmethod = %d filtermethod = %d interlacemethod = %d' % (width, width, height, height, bits, colortype, compressionmethod, filtermethod, interlacemethod))
+                    oOutput.Line(cDump(chunkData, '  ', position + 8).HexAsciiDump(), eol='')
+                elif chunkType == b'IDAT':
+                    bIDATData += chunkData
+                    counterIDAT += 1
+                    oOutput.Line('')
+                else:
+                    oOutput.Line('')
+
+        oOutput.Line('Stats:')
+        for key, value in dStats.items():
+            oOutput.Line(' %s: %d' % (key, value))
+
         oOutput.Line('IDAT counter: %d' % counterIDAT)
         if counterIDAT == 0:
             return
@@ -1714,6 +1758,7 @@ https://DidierStevens.com'''
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
     oParser.add_option('-o', '--output', type=str, default='', help='Output to file (# supported)')
     oParser.add_option('-s', '--select', type=str, default='', help='Select')
+    oParser.add_option('-R', '--raw', action='store_true', default=False, help='get raw bitmap')
     oParser.add_option('-d', '--dump', action='store_true', default=False, help='perform dump')
     oParser.add_option('-x', '--hexdump', action='store_true', default=False, help='perform hex dump')
     oParser.add_option('-a', '--asciidump', action='store_true', default=False, help='perform ascii dump')
