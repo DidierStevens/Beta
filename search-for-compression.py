@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Tool to search for compressed data'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.3'
-__date__ = '2025/04/21'
+__version__ = '0.0.4'
+__date__ = '2025/05/25'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -18,6 +18,7 @@ History:
   2019/08/18: added options -s, -x, -a, ...
   2023/09/23: 0.0.2 refactoring; --jsonoutput; YARA support
   2025/04/21: 0.0.3 bugfix YARACompile
+  2025/05/25: 0.0.4 added vba, yara predefined rules
 
 Todo:
   Document flag arguments in man page
@@ -1830,6 +1831,22 @@ def YARACompile(ruledata):
             rule = 'rule hexadecimal {strings: $a = { %s } condition: $a}' % ruledata[3:]
         elif ruledata.startswith('#r#'):
             rule = 'rule regex {strings: $a = /%s/ ascii wide nocase condition: $a}' % ruledata[3:]
+        elif ruledata.startswith('#p#'):
+            rule = """
+rule attribute_vb_name {
+    strings:
+        $a = "Attribute VB_Name = "
+    condition:
+        $a
+}
+
+rule dir {
+    strings:
+        $a = { 01 00 04 }
+    condition:
+        $a at 0
+}
+            """
         else:
             rule = ruledata[1:]
         return yara.compile(source=rule, externals={'streamname': '', 'VBA': False}), rule
@@ -1885,6 +1902,148 @@ def ExtraInfoHEADASCII(data):
         return ''
     return ''.join([IFF(b >= 32 and b < 127, chr(b), '.') for b in data[:8]])
 
+def P23Ord(value):
+    if type(value) == int:
+        return value
+    else:
+        return ord(value)
+
+def ParseTokenSequence(data):
+    flags = P23Ord(data[0])
+    data = data[1:]
+    result = []
+    for mask in [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80]:
+        if len(data) > 0:
+            if flags & mask:
+                result.append(data[0:2])
+                data = data[2:]
+            else:
+                result.append(data[0])
+                data = data[1:]
+    return result, data
+
+def OffsetBits(data):
+    numberOfBits = int(math.ceil(math.log(len(data), 2)))
+    if numberOfBits < 4:
+        numberOfBits = 4
+    elif numberOfBits > 12:
+        numberOfBits = 12
+    return numberOfBits
+
+def Bin(number):
+    result = bin(number)[2:]
+    while len(result) < 16:
+        result = '0' + result
+    return result
+
+def DecompressChunk(compressedChunk):
+    if len(compressedChunk) < 2:
+        return None, None
+    header = P23Ord(compressedChunk[0]) + P23Ord(compressedChunk[1]) * 0x100
+    size = (header & 0x0FFF) + 3
+    flagCompressed = header & 0x8000
+    data = compressedChunk[2:2 + size - 2]
+
+    if flagCompressed == 0:
+        return data.decode(errors='ignore'), compressedChunk[size:]
+
+    decompressedChunk = ''
+    while len(data) != 0:
+        tokens, data = ParseTokenSequence(data)
+        for token in tokens:
+            if type(token) == int:
+                decompressedChunk += chr(token)
+            elif len(token) == 1:
+                decompressedChunk += token
+            else:
+                if decompressedChunk == '':
+                    return None, None
+                numberOfOffsetBits = OffsetBits(decompressedChunk)
+                copyToken = P23Ord(token[0]) + P23Ord(token[1]) * 0x100
+                offset = 1 + (copyToken >> (16 - numberOfOffsetBits))
+                length = 3 + (((copyToken << numberOfOffsetBits) & 0xFFFF) >> numberOfOffsetBits)
+                copy = decompressedChunk[-offset:]
+                copy = copy[0:length]
+                lengthCopy = len(copy)
+                while length > lengthCopy: #a#
+                    if length - lengthCopy >= lengthCopy:
+                        copy += copy[0:lengthCopy]
+                        length -= lengthCopy
+                    else:
+                        copy += copy[0:length - lengthCopy]
+                        length -= length - lengthCopy
+                decompressedChunk += copy
+    return decompressedChunk, compressedChunk[size:]
+
+def Decompress(compressedData, replace=True):
+    if P23Ord(compressedData[0]) != 1:
+        return (False, None)
+    remainder = compressedData[1:]
+    decompressed = ''
+    while len(remainder) != 0:
+        decompressedChunk, remainder = DecompressChunk(remainder)
+        if decompressedChunk == None:
+            return (False, decompressed)
+        decompressed += decompressedChunk
+    if replace:
+        return (True, decompressed.replace('\r\n', '\n'))
+    else:
+        return (True, decompressed)
+
+def FindAllPotentialVBA(data, rules, options, oOutput):
+    potentials = []
+    index = 1
+    positions = FindAll(data, b'\x01')
+    for position in positions:
+        buffer = data[position:position + 1]
+        positionChunk = position + 1
+        while True:
+            if positionChunk + 1 < len(data) and data[positionChunk + 1] & 0xF0 == 0xB0:
+                headerCompressedChunk = struct.unpack('<H', data[positionChunk:positionChunk+2])[0]
+                sizeCompressedChunk = (headerCompressedChunk & 0x0FFF) + 3
+                buffer += data[positionChunk:positionChunk+sizeCompressedChunk]
+                positionChunk += sizeCompressedChunk
+            else:
+                break
+
+        if buffer == b'\x01':
+            continue
+
+        try:
+            result, decompressed = Decompress(buffer.decode('latin'), False)
+            if result:
+                lenCompressed = len(buffer)
+                lenDecompressed = len(decompressed)
+                if lenDecompressed == 0:
+                   ratio = '    '
+                else:
+                   ratio = '%.2f' % (lenCompressed / lenDecompressed)
+                if options.yara != None:
+                    matches = rules.match(data=decompressed)
+                    if matches:
+                        oOutput.Line('%4d: 0x%08x %8d %8d %s %-16s %s' % (index, position, lenCompressed, lenDecompressed, ratio, binascii.b2a_hex(decompressed[:8].encode('latin')).decode('latin'), ExtraInfoHEADASCII(decompressed[:8].encode('latin'))))
+                    for result in matches:
+                        print('               YARA rule: %s' % result.rule)
+                        if options.yarastrings:
+                            for stringdata in result.strings:
+                                print('               %06x %s:' % (stringdata[0], stringdata[1]))
+                                print('                %s' % binascii.hexlify(C2BIP3(stringdata[2])))
+                                print('                %s' % repr(stringdata[2]))
+                elif options.select == '':
+                    oOutput.Line('%4d: 0x%08x %8d %8d %s %-16s %s' % (index, position, lenCompressed, lenDecompressed, ratio, binascii.b2a_hex(decompressed[:8].encode('latin')).decode('latin'), ExtraInfoHEADASCII(decompressed[:8].encode('latin'))))
+                else:
+                    if options.select.endswith('c'):
+                        selection = int(options.select[:-1])
+                        todump = buffer
+                    else:
+                        selection = int(options.select)
+                        todump = decompressed.encode('latin')
+                    if selection == index:
+                        DoDump(todump, options, oOutput)
+                index += 1
+        except:
+            raise
+
 def ProcessBinaryFile(filename, content, cutexpression, flag, rules, oOutput, oLogfile, options, oParserFlag):
     if content == None:
         try:
@@ -1910,39 +2069,44 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, rules, oOutput, oL
         if not oOutput.binary and not options.jsonoutput:
             oOutput.Line('File: %s%s' % (filename, IFF(oBinaryFile.extracted, ' (extracted)', '')))
         buffer = data
-        counter = 0
-        oMyJSONOutput = cMyJSONOutput()
-        while len(buffer) > 0:
-            decompressed, lenCompressed, remainder = ZlibRawDecompress(buffer)
-            if decompressed == None or len(decompressed) < options.minsize:
-                buffer = buffer[1:]
-            else:
-                counter += 1
-                if options.jsonoutput:
-                    oMyJSONOutput.AddIdItem(counter, '0x%08x' % (len(data) - len(buffer)), decompressed)
-                elif options.yara != None:
-                    matches = rules.match(data=decompressed)
-                    if matches:
-                        oOutput.Line('%d: 0x%08x %d %d %d' % (counter, len(data) - len(buffer), lenCompressed, len(decompressed), len(remainder)))
-                    for result in matches:
-                        print('               YARA rule: %s' % result.rule)
-                        if options.yarastrings:
-                            for stringdata in result.strings:
-                                print('               %06x %s:' % (stringdata[0], stringdata[1]))
-                                print('                %s' % binascii.hexlify(C2BIP3(stringdata[2])))
-                                print('                %s' % repr(stringdata[2]))
-                elif options.select == '':
-                    if len(decompressed) == 0:
-                       ratio = '    '
-                    else:
-                       ratio = '%.2f' % (lenCompressed / len(decompressed))
-                    oOutput.Line('%4d: 0x%08x %8d %8d %s %-16s %s' % (counter, len(data) - len(buffer), lenCompressed, len(decompressed), ratio, binascii.b2a_hex(decompressed[:8]).decode('latin'), ExtraInfoHEADASCII(decompressed[:8])))
-                elif options.select == 'a' or int(options.select) == counter:
-                    DoDump(decompressed, options, oOutput)
-                if options.deep == 0 or lenCompressed >= options.deep:
-                    buffer = remainder
-                else:
+        
+        if options.type == 'zlib':
+            counter = 0
+            oMyJSONOutput = cMyJSONOutput()
+            while len(buffer) > 0:
+                decompressed, lenCompressed, remainder = ZlibRawDecompress(buffer)
+                if decompressed == None or len(decompressed) < options.minsize:
                     buffer = buffer[1:]
+                else:
+                    counter += 1
+                    if options.jsonoutput:
+                        oMyJSONOutput.AddIdItem(counter, '0x%08x' % (len(data) - len(buffer)), decompressed)
+                    elif options.yara != None:
+                        matches = rules.match(data=decompressed)
+                        if matches:
+                            oOutput.Line('%d: 0x%08x %d %d %d' % (counter, len(data) - len(buffer), lenCompressed, len(decompressed), len(remainder)))
+                        for result in matches:
+                            print('               YARA rule: %s' % result.rule)
+                            if options.yarastrings:
+                                for stringdata in result.strings:
+                                    print('               %06x %s:' % (stringdata[0], stringdata[1]))
+                                    print('                %s' % binascii.hexlify(C2BIP3(stringdata[2])))
+                                    print('                %s' % repr(stringdata[2]))
+                    elif options.select == '':
+                        if len(decompressed) == 0:
+                           ratio = '    '
+                        else:
+                           ratio = '%.2f' % (lenCompressed / len(decompressed))
+                        oOutput.Line('%4d: 0x%08x %8d %8d %s %-16s %s' % (counter, len(data) - len(buffer), lenCompressed, len(decompressed), ratio, binascii.b2a_hex(decompressed[:8]).decode('latin'), ExtraInfoHEADASCII(decompressed[:8])))
+                    elif options.select == 'a' or int(options.select) == counter:
+                        DoDump(decompressed, options, oOutput)
+                    if options.deep == 0 or lenCompressed >= options.deep:
+                        buffer = remainder
+                    else:
+                        buffer = buffer[1:]
+        if options.type == 'vba':
+            FindAllPotentialVBA(data, rules, options, oOutput)
+
         if options.jsonoutput:
             oOutput.Line(oMyJSONOutput.GetJSON())
         # ----------------------------------------------
@@ -2014,6 +2178,7 @@ https://DidierStevens.com'''
 
     oParser = optparse.OptionParser(usage='usage: %prog [options] [[@]file|cut-expression|flag-expression ...]\n' + __description__ + moredesc, version='%prog ' + __version__, epilog='This tool also accepts flag arguments (#f#), read the man page (-m) for more info.')
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
+    oParser.add_option('-t', '--type', type=str, default='zlib', help='Type of compression')
     oParser.add_option('-n', '--minsize', type=int, default=0, help='Minimum size of decompressed data (default 0)')
     oParser.add_option('-D', '--deep', type=int, default=0, help='Deep scan (default 0)')
     oParser.add_option('-j', '--jsonoutput', action='store_true', default=False, help='produce json output')
