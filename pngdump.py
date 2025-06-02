@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Template binary file argument'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.6'
-__date__ = '2025/04/29'
+__version__ = '0.0.7'
+__date__ = '2025/06/02'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -48,6 +48,7 @@ History:
   2022/10/13: 0.0.4 added extra
   2023/03/22: 0.0.5 added option -f
   2025/04/29: 0.0.6 added option -R
+  2025/06/02: 0.0.7 added OPTIONS_SELECT_INDEX
 
 Todo:
   Document flag arguments in man page
@@ -1486,6 +1487,7 @@ OPTIONS_SELECT_IDATS = 'idats'
 OPTIONS_SELECT_DECOMPRESSED = 'decompressed'
 OPTIONS_SELECT_EXTRA = 'extra'
 OPTIONS_SELECT_LINE = 'line'
+OPTIONS_SELECT_INDEX = 'INDEX'
 
 def StartsWithGetRemainder(strIn, strStart):
     if strIn.startswith(strStart):
@@ -1494,6 +1496,12 @@ def StartsWithGetRemainder(strIn, strStart):
         return False, None
 
 def CheckSelect(options):
+    try:
+        number = int(options.select)
+        if number > 0:
+            return True, OPTIONS_SELECT_INDEX, number
+    except ValueError:
+        pass
     if options.select in ['']:
         return False, None, None
     if options.select in [OPTIONS_SELECT_IDATS, OPTIONS_SELECT_DECOMPRESSED, OPTIONS_SELECT_EXTRA]:
@@ -1622,18 +1630,19 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
         dStats = {}
         bIDATData = b''
         counterIDAT = 0
-        for position, sub, length in chunks:
+        for counter, (position, sub, length) in enumerate(chunks):
+            counter += 1
             dStats[sub] = dStats.get(sub, 0) + 1
             if sub == pngheader:
                 if position == 0:
-                    oOutput.Line('p=0x%08x expected header present' % (position))
+                    oOutput.Line('%4d: p=0x%08x expected header present' % (counter, position))
                 else:
-                    oOutput.Line('p=0x%08x header at unexpected position' % (position))
+                    oOutput.Line('%4d: p=0x%08x header at unexpected position' % (counter, position))
             elif sub == None:
-                oOutput.Line('p=0x%08x           l=0x%08x unexpected data' % (position, length))
+                oOutput.Line('%4d: p=0x%08x           l=0x%08x unexpected data' % (counter, position, length))
             else:
                 chunkType, chunkData, chunkCRC32, chunkCRC32Calculated, remainder = ParsePNGChunk(data[position:position + length])
-                oOutput.Line('p=0x%08x t=%s l=0x%08x 0x%08x' % (position, chunkType, len(chunkData), chunkCRC32), eol='')
+                oOutput.Line('%4d: p=0x%08x t=%s l=0x%08x 0x%08x' % (counter, position, chunkType, len(chunkData), chunkCRC32), eol='')
                 if chunkCRC32 == chunkCRC32Calculated:
                     oOutput.Line(' crc32 OK', eol='')
                 else:
@@ -1649,6 +1658,9 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
                     oOutput.Line('')
                 else:
                     oOutput.Line('')
+            if selectType == OPTIONS_SELECT_INDEX and selectArgument == counter:
+                Dump(data[position:position+length], oOutput, options)
+                return
 
         oOutput.Line('Stats:')
         for key, value in dStats.items():
