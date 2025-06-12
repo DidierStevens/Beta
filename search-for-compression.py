@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Tool to search for compressed data'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.4'
-__date__ = '2025/05/25'
+__version__ = '0.0.5'
+__date__ = '2025/06/08'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -19,6 +19,7 @@ History:
   2023/09/23: 0.0.2 refactoring; --jsonoutput; YARA support
   2025/04/21: 0.0.3 bugfix YARACompile
   2025/05/25: 0.0.4 added vba, yara predefined rules
+  2025/06/08: 0.0.5 added option -u
 
 Todo:
   Document flag arguments in man page
@@ -70,6 +71,8 @@ If it fails, it moves on to the next byte.
 If it succeeds, it reports the find (depending on option -n) and moves on to the first byte after the compressed data (depending on option -D).
 
 Option -n --minsize defines the minimum size of the decompressed data to be included in the report.
+
+Option -u --unique ignores duplicates of decompressed data.
 
 Option -D (--deep) governs the scanning process.
 Value 0 means:
@@ -1993,6 +1996,7 @@ def Decompress(compressedData, replace=True):
 def FindAllPotentialVBA(data, rules, options, oOutput):
     potentials = []
     index = 1
+    hashes = set()
     positions = FindAll(data, b'\x01')
     for position in positions:
         buffer = data[position:position + 1]
@@ -2014,6 +2018,10 @@ def FindAllPotentialVBA(data, rules, options, oOutput):
             if result:
                 lenCompressed = len(buffer)
                 lenDecompressed = len(decompressed)
+                sha256 = hashlib.sha256(decompressed.encode('latin')).hexdigest()
+                if options.unique and sha256 in hashes:
+                    continue
+                hashes.add(sha256)
                 if lenDecompressed == 0:
                    ratio = '    '
                 else:
@@ -2073,11 +2081,20 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, rules, oOutput, oL
         if options.type == 'zlib':
             counter = 0
             oMyJSONOutput = cMyJSONOutput()
+            hashes = set()
             while len(buffer) > 0:
                 decompressed, lenCompressed, remainder = ZlibRawDecompress(buffer)
                 if decompressed == None or len(decompressed) < options.minsize:
                     buffer = buffer[1:]
                 else:
+                    sha256 = hashlib.sha256(decompressed).hexdigest()
+                    if options.unique and sha256 in hashes:
+                        if options.deep == 0 or lenCompressed >= options.deep:
+                            buffer = remainder
+                        else:
+                            buffer = buffer[1:]
+                        continue
+                    hashes.add(sha256)
                     counter += 1
                     if options.jsonoutput:
                         oMyJSONOutput.AddIdItem(counter, '0x%08x' % (len(data) - len(buffer)), decompressed)
@@ -2180,6 +2197,7 @@ https://DidierStevens.com'''
     oParser.add_option('-m', '--man', action='store_true', default=False, help='Print manual')
     oParser.add_option('-t', '--type', type=str, default='zlib', help='Type of compression')
     oParser.add_option('-n', '--minsize', type=int, default=0, help='Minimum size of decompressed data (default 0)')
+    oParser.add_option('-u', '--unique', action='store_true', default=False, help='removed duplicates (decompressed data)')
     oParser.add_option('-D', '--deep', type=int, default=0, help='Deep scan (default 0)')
     oParser.add_option('-j', '--jsonoutput', action='store_true', default=False, help='produce json output')
     oParser.add_option('-V', '--verbose', action='store_true', default=False, help='verbose output with decoder errors and YARA rules')
