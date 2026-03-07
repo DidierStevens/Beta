@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Tool to search for compressed data'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.5'
-__date__ = '2025/06/08'
+__version__ = '0.0.6'
+__date__ = '2026/03/07'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -20,6 +20,7 @@ History:
   2025/04/21: 0.0.3 bugfix YARACompile
   2025/05/25: 0.0.4 added vba, yara predefined rules
   2025/06/08: 0.0.5 added option -u
+  2026/03/07: 0.0.6 update for yara.StringMatch
 
 Todo:
   Document flag arguments in man page
@@ -2033,10 +2034,11 @@ def FindAllPotentialVBA(data, rules, options, oOutput):
                     for result in matches:
                         print('               YARA rule: %s' % result.rule)
                         if options.yarastrings:
-                            for stringdata in result.strings:
-                                print('               %06x %s:' % (stringdata[0], stringdata[1]))
-                                print('                %s' % binascii.hexlify(C2BIP3(stringdata[2])))
-                                print('                %s' % repr(stringdata[2]))
+                            for oStringMatch in result.strings:
+                                for oStringMatchInstance in oStringMatch.instances:
+                                    print('               %06x %02x %s:' % (oStringMatchInstance.offset, oStringMatchInstance.xor_key, oStringMatch.identifier))
+                                    print('                %s' % binascii.hexlify(oStringMatchInstance.plaintext()).decode())
+                                    print('                %s' % repr(oStringMatchInstance.plaintext()))
                 elif options.select == '':
                     oOutput.Line('%4d: 0x%08x %8d %8d %s %-16s %s' % (index, position, lenCompressed, lenDecompressed, ratio, binascii.b2a_hex(decompressed[:8].encode('latin')).decode('latin'), ExtraInfoHEADASCII(decompressed[:8].encode('latin'))))
                 else:
@@ -2105,10 +2107,11 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, rules, oOutput, oL
                         for result in matches:
                             print('               YARA rule: %s' % result.rule)
                             if options.yarastrings:
-                                for stringdata in result.strings:
-                                    print('               %06x %s:' % (stringdata[0], stringdata[1]))
-                                    print('                %s' % binascii.hexlify(C2BIP3(stringdata[2])))
-                                    print('                %s' % repr(stringdata[2]))
+                                for oStringMatch in result.strings:
+                                    for oStringMatchInstance in oStringMatch.instances:
+                                        print('               %06x %02x %s:' % (oStringMatchInstance.offset, oStringMatchInstance.xor_key, oStringMatch.identifier))
+                                        print('                %s' % binascii.hexlify(oStringMatchInstance.plaintext()).decode())
+                                        print('                %s' % repr(oStringMatchInstance.plaintext()))
                     elif options.select == '':
                         if len(decompressed) == 0:
                            ratio = '    '
