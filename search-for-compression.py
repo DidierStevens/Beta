@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Tool to search for compressed data'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.6'
-__date__ = '2026/03/07'
+__version__ = '0.0.8'
+__date__ = '2026/09/15'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -21,6 +21,8 @@ History:
   2025/05/25: 0.0.4 added vba, yara predefined rules
   2025/06/08: 0.0.5 added option -u
   2026/03/07: 0.0.6 update for yara.StringMatch
+  2026/05/12: 0.0.7 fixed JSON for vba
+  2026/09/15: 0.0.8 added option -S  
 
 Todo:
   Document flag arguments in man page
@@ -82,6 +84,8 @@ If decompression attempt succeeds, move on to the first byte after the compresse
 A value different from 0 means:
 If decompression attempt succeeds, move on to the first byte after the compressed data provided that the compressed data is at least as large as the value provided with option -D.
 Otherwise, move on to the next byte.
+
+Option -S (--scan) takes an integer (default), which is de maximum size of the decompression buffer. 0 means no limit.
 
 Option -j (--jsonoutput) produces JSON data containing all decompressed parts.
 
@@ -1882,7 +1886,7 @@ class cMyJSONOutput():
     def GetJSON(self):
         return json.dumps({'version': 2, 'id': 'didierstevens.com', 'type': 'content', 'fields': ['id', 'name', 'content'], 'items': self.items})
 
-def ZlibRawDecompress(data):
+def ZlibRawDecompressOriginal(data):
     try:
         result = zlib.decompress(data, -8, 1000000)
         recompressLengthStart = len(zlib.compress(result))
@@ -1901,6 +1905,22 @@ def ZlibRawDecompress(data):
     except:
         return None, None, None
 
+import zlib
+
+def ZlibRawDecompress(data, buffersize):
+    try:
+        # -8 specifies raw DEFLATE format
+        dobj = zlib.decompressobj(-8)
+        result = dobj.decompress(data, buffersize)
+        
+        # unused_data holds any bytes left over after the compressed stream ended
+        remaining_data = dobj.unused_data
+        consumed_bytes = len(data) - len(remaining_data)
+        
+        return result, consumed_bytes, remaining_data
+    except Exception:
+        return None, None, None
+        
 def ExtraInfoHEADASCII(data):
     if data == None:
         return ''
@@ -1994,7 +2014,7 @@ def Decompress(compressedData, replace=True):
     else:
         return (True, decompressed)
 
-def FindAllPotentialVBA(data, rules, options, oOutput):
+def FindAllPotentialVBA(data, rules, options, oMyJSONOutput, oOutput):
     potentials = []
     index = 1
     hashes = set()
@@ -2027,7 +2047,9 @@ def FindAllPotentialVBA(data, rules, options, oOutput):
                    ratio = '    '
                 else:
                    ratio = '%.2f' % (lenCompressed / lenDecompressed)
-                if options.yara != None:
+                if options.jsonoutput:
+                    oMyJSONOutput.AddIdItem(index, '0x%08x' % (len(data) - len(buffer)), decompressed.encode('latin'))
+                elif options.yara != None:
                     matches = rules.match(data=decompressed)
                     if matches:
                         oOutput.Line('%4d: 0x%08x %8d %8d %s %-16s %s' % (index, position, lenCompressed, lenDecompressed, ratio, binascii.b2a_hex(decompressed[:8].encode('latin')).decode('latin'), ExtraInfoHEADASCII(decompressed[:8].encode('latin'))))
@@ -2054,6 +2076,31 @@ def FindAllPotentialVBA(data, rules, options, oOutput):
         except:
             raise
 
+def Decompress_longest_valid(buffer, options):
+    """
+    Finds the largest scan parameter between options.scan and len(buffer)
+    that yields a valid (non-None) decompressed output.
+    """
+    low = options.scan
+    high = len(buffer)
+    
+    best_result = (None, None, None)
+
+    while low <= high:
+        mid = (low + high) // 2
+        decomp, len_comp, rem = ZlibRawDecompress(buffer, mid)
+        
+        if decomp is not None:
+            # Valid output found; record result and check higher values
+            best_result = (decomp, len_comp, rem)
+            low = mid + 1
+        else:
+            # Failed; search lower values
+            high = mid - 1
+            
+    decompressed, lenCompressed, remainder = best_result
+    return decompressed, lenCompressed, remainder
+    
 def ProcessBinaryFile(filename, content, cutexpression, flag, rules, oOutput, oLogfile, options, oParserFlag):
     if content == None:
         try:
@@ -2080,18 +2127,23 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, rules, oOutput, oL
             oOutput.Line('File: %s%s' % (filename, IFF(oBinaryFile.extracted, ' (extracted)', '')))
         buffer = data
         
+        oMyJSONOutput = cMyJSONOutput()
         if options.type == 'zlib':
             counter = 0
-            oMyJSONOutput = cMyJSONOutput()
             hashes = set()
             while len(buffer) > 0:
-                decompressed, lenCompressed, remainder = ZlibRawDecompress(buffer)
+                if options.scan != 0:
+                    decompressed, lenCompressed, remainder = Decompress_longest_valid(buffer, options)
+                else:
+                    decompressed, lenCompressed, remainder = ZlibRawDecompress(buffer, 1000000)
                 if decompressed == None or len(decompressed) < options.minsize:
                     buffer = buffer[1:]
                 else:
                     sha256 = hashlib.sha256(decompressed).hexdigest()
                     if options.unique and sha256 in hashes:
-                        if options.deep == 0 or lenCompressed >= options.deep:
+                        if options.scan != 0:
+                            buffer = buffer[1:]
+                        elif options.deep == 0 or lenCompressed >= options.deep:
                             buffer = remainder
                         else:
                             buffer = buffer[1:]
@@ -2112,6 +2164,7 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, rules, oOutput, oL
                                         print('               %06x %02x %s:' % (oStringMatchInstance.offset, oStringMatchInstance.xor_key, oStringMatch.identifier))
                                         print('                %s' % binascii.hexlify(oStringMatchInstance.plaintext()).decode())
                                         print('                %s' % repr(oStringMatchInstance.plaintext()))
+                                
                     elif options.select == '':
                         if len(decompressed) == 0:
                            ratio = '    '
@@ -2120,12 +2173,14 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, rules, oOutput, oL
                         oOutput.Line('%4d: 0x%08x %8d %8d %s %-16s %s' % (counter, len(data) - len(buffer), lenCompressed, len(decompressed), ratio, binascii.b2a_hex(decompressed[:8]).decode('latin'), ExtraInfoHEADASCII(decompressed[:8])))
                     elif options.select == 'a' or int(options.select) == counter:
                         DoDump(decompressed, options, oOutput)
-                    if options.deep == 0 or lenCompressed >= options.deep:
+                    if options.scan != 0:
+                        buffer = buffer[1:]
+                    elif options.deep == 0 or lenCompressed >= options.deep:
                         buffer = remainder
                     else:
                         buffer = buffer[1:]
         if options.type == 'vba':
-            FindAllPotentialVBA(data, rules, options, oOutput)
+            FindAllPotentialVBA(data, rules, options, oMyJSONOutput, oOutput)
 
         if options.jsonoutput:
             oOutput.Line(oMyJSONOutput.GetJSON())
@@ -2202,6 +2257,7 @@ https://DidierStevens.com'''
     oParser.add_option('-n', '--minsize', type=int, default=0, help='Minimum size of decompressed data (default 0)')
     oParser.add_option('-u', '--unique', action='store_true', default=False, help='removed duplicates (decompressed data)')
     oParser.add_option('-D', '--deep', type=int, default=0, help='Deep scan (default 0)')
+    oParser.add_option('-S', '--scan', type=int, default=0, help='Scan buffer size (default 0)')
     oParser.add_option('-j', '--jsonoutput', action='store_true', default=False, help='produce json output')
     oParser.add_option('-V', '--verbose', action='store_true', default=False, help='verbose output with decoder errors and YARA rules')
     oParser.add_option('-y', '--yara', help="YARA rule-file, @file, directory or #rule to check streams (YARA search doesn't work with -s option)")
