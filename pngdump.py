@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Template binary file argument'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.7'
-__date__ = '2025/06/02'
+__version__ = '0.0.8'
+__date__ = '2026/09/23'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -49,6 +49,7 @@ History:
   2023/03/22: 0.0.5 added option -f
   2025/04/29: 0.0.6 added option -R
   2025/06/02: 0.0.7 added OPTIONS_SELECT_INDEX
+  2026/09/23: 0.0.8 capture broken pipe error
 
 Todo:
   Document flag arguments in man page
@@ -1809,10 +1810,14 @@ https://DidierStevens.com'''
         PrintError(oExpandFilenameArguments.message)
         oLogfile.Line('Warning', repr(oExpandFilenameArguments.message))
 
-    ProcessBinaryFiles(oExpandFilenameArguments.Filenames(), oLogfile, options, oParserFlag)
+    try:
+        ProcessBinaryFiles(oExpandFilenameArguments.Filenames(), oLogfile, options, oParserFlag)
 
-    if oLogfile.errors > 0:
-        PrintError('Number of errors: %d' % oLogfile.errors)
+        if oLogfile.errors > 0:
+            PrintError('Number of errors: %d' % oLogfile.errors)
+    except BrokenPipeError:
+        pass
+
     oLogfile.Close()
 
 if __name__ == '__main__':
