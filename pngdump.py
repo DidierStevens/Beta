@@ -4,8 +4,8 @@ from __future__ import print_function
 
 __description__ = 'Template binary file argument'
 __author__ = 'Didier Stevens'
-__version__ = '0.0.8'
-__date__ = '2026/09/23'
+__version__ = '0.0.9'
+__date__ = '2026/09/24'
 
 """
 Source code put in the public domain by Didier Stevens, no Copyright
@@ -50,6 +50,7 @@ History:
   2025/04/29: 0.0.6 added option -R
   2025/06/02: 0.0.7 added OPTIONS_SELECT_INDEX
   2026/09/23: 0.0.8 capture broken pipe error
+  2026/09/24: 0.0.9 added dColorTypeChannels
 
 Todo:
   Document flag arguments in man page
@@ -1586,6 +1587,8 @@ def ParseChunks(data):
     return chunks
 
 def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile, options, oParserFlag):
+    dColorTypeChannels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}
+
     if content == None:
         try:
             oBinaryFile = cBinaryFile(filename, C2BIP3(options.password), options.noextraction, options.literalfilenames)
@@ -1651,7 +1654,7 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
                 if chunkType == b'IHDR':
                     format = '>IIBBBBB'
                     width, height, bits, colortype, compressionmethod, filtermethod, interlacemethod = struct.unpack(format, chunkData[:struct.calcsize(format)])
-                    oOutput.Line(' width = %d (0x%08x) height = %d (0x%08x) bits = %d colortype = %d compressionmethod = %d filtermethod = %d interlacemethod = %d' % (width, width, height, height, bits, colortype, compressionmethod, filtermethod, interlacemethod))
+                    oOutput.Line(' width = %d (0x%08x) height = %d (0x%08x) bits = %d colortype = %d (%d channel(s)) compressionmethod = %d filtermethod = %d interlacemethod = %d' % (width, width, height, height, bits, colortype, dColorTypeChannels[colortype], compressionmethod, filtermethod, interlacemethod))
                     oOutput.Line(cDump(chunkData, '  ', position + 8).HexAsciiDump(), eol='')
                 elif chunkType == b'IDAT':
                     bIDATData += chunkData
@@ -1686,7 +1689,7 @@ def ProcessBinaryFile(filename, content, cutexpression, flag, oOutput, oLogfile,
             return
 
         oOutput.Line('Decompressed IDAT data length: %d' % len(decompressed))
-        multiplier = {0: 1, 2: 3, 4: 2, 6: 4}[colortype]
+        multiplier = dColorTypeChannels[colortype]
         scanlineSize = math.ceil(width * bits / 8.0) * multiplier
         oOutput.Line('scanlineSize: %d %f' % (scanlineSize, width * bits / 8.0 * multiplier))
         filters = []
